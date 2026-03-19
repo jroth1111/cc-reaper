@@ -5,6 +5,12 @@
 # Install: Copy to ~/.claude/hooks/ and add to ~/.claude/settings.json
 # See README.md for setup instructions.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LEDGER_HELPERS="$SCRIPT_DIR/../shell/claude-process-ledger.bash"
+[ -f "$LEDGER_HELPERS" ] || LEDGER_HELPERS="$HOME/.cc-reaper/claude-process-ledger.bash"
+# shellcheck disable=SC1090
+source "$LEDGER_HELPERS"
+
 # ─── PGID-based cleanup (primary) ────────────────────────────────────────────
 # This hook inherits the Claude session's process group (PGID).
 # Kill all processes in our group — catches ALL children including unknown
@@ -12,9 +18,9 @@
 #
 # WHITELIST: Long-running MCP servers shared across sessions are excluded.
 MCP_WHITELIST="${CC_MCP_WHITELIST:-supabase|@stripe/mcp|context7|claude-mem|chroma-mcp}"
-MCP_ORPHAN_PATTERN="npm exec @upstash|npm exec mcp-|npx.*mcp-server|node.*mcp-server|docker run .*mcp/|python.*mcp|uvx?.*mcp|worker-service\\.cjs|bun.*worker-service"
 
 SESSION_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+ccr_record_session_snapshot "$SESSION_PGID" 2>/dev/null || true
 
 if [ -n "$SESSION_PGID" ] && [ "$SESSION_PGID" != "0" ] && [ "$SESSION_PGID" != "1" ]; then
  # Collect PIDs to kill (excluding this script, parent, and whitelisted)
@@ -41,18 +47,17 @@ if [ -n "$SESSION_PGID" ] && [ "$SESSION_PGID" != "0" ] && [ "$SESSION_PGID" != 
  done
 fi
 
-# ─── Pattern-based fallback (PPID=1 only) ─────────────────────────────────────
-# Only kill processes that are TRUE orphans (PPID=1) and match our patterns.
-# This catches processes that escaped their process group via setsid().
+# ─── Ledger-based fallback (PPID=1 only) ──────────────────────────────────────
+# Only kill processes that are TRUE orphans (PPID=1) and were previously
+# recorded as descendants of a real Claude session.
 
-# Collect orphan PIDs to kill
+ccr_prune_snapshots
 orphan_pids=""
-while IFS= read -r pid; do
+while IFS=$'\t' read -r pid _pgid pid_cmd; do
  [ -z "$pid" ] && continue
- pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
  echo "$pid_cmd" | grep -qE "$MCP_WHITELIST" && continue
  orphan_pids="$orphan_pids $pid"
-done < <(ps -eo pid,ppid,command | awk '$2 == 1' | grep -E "[c]laude.*stream-json|${MCP_ORPHAN_PATTERN}" | awk '{print $1}')
+done < <(ccr_known_orphan_pids)
 
 # Send SIGTERM
 for pid in $orphan_pids; do

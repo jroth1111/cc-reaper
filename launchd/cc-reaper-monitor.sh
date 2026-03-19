@@ -5,6 +5,13 @@
 #
 # Zero dependencies — no Homebrew, no Rust, just bash + launchd.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LEDGER_HELPERS="$SCRIPT_DIR/claude-process-ledger.bash"
+[ -f "$LEDGER_HELPERS" ] || LEDGER_HELPERS="$SCRIPT_DIR/../shell/claude-process-ledger.bash"
+[ -f "$LEDGER_HELPERS" ] || LEDGER_HELPERS="$HOME/.cc-reaper/claude-process-ledger.bash"
+# shellcheck disable=SC1090
+source "$LEDGER_HELPERS"
+
 LOG_DIR="$HOME/.cc-reaper/logs"
 LOG_FILE="$LOG_DIR/monitor.log"
 mkdir -p "$LOG_DIR"
@@ -19,7 +26,7 @@ log() {
 }
 
 MCP_WHITELIST="${CC_MCP_WHITELIST:-supabase|@stripe/mcp|context7|claude-mem|chroma-mcp}"
-MCP_ORPHAN_PATTERN="node.*mcp-server|npx.*mcp-server|docker run .*mcp/|python.*mcp|uvx?.*mcp|worker-service\\.cjs|node.*claude-mem"
+ccr_refresh_active_session_snapshots
 
 # ─── PGID-based cleanup (primary) ────────────────────────────────────────────
 # Find orphaned process groups whose leader has PPID=1 and is a Claude process.
@@ -44,37 +51,31 @@ for pgid in $orphan_pgids; do
  killed_pgids+=("$pgid")
 done
 
-# ─── Pattern-based fallback (PPID=1 only) ─────────────────────────────────────
-# Catches processes that escaped their process group (e.g., called setsid())
-orphans=$(ps -eo pid,ppid,%cpu,%mem,etime,command | awk '$2 == 1' | grep -E "[c]laude.*stream-json|${MCP_ORPHAN_PATTERN}")
-
+# ─── Ledger-based fallback (PPID=1 only) ──────────────────────────────────────
+# Only kill processes that are TRUE orphans (PPID=1) and were previously
+# observed as descendants of a Claude session.
 kill_pids=()
-
-if [ -n "$orphans" ]; then
- while IFS= read -r line; do
- pid=$(echo "$line" | awk '{print $1}')
- cpu=$(echo "$line" | awk '{print $3}')
- mem=$(echo "$line" | awk '{print $4}')
- etime=$(echo "$line" | awk '{print $5}')
- cmd=$(echo "$line" | awk '{for(i=6;i<=NF;i++) printf "%s ", $i; print ""}' | head -c 80)
+while IFS=$'\t' read -r pid pid_pgid cmd; do
+ [ -n "$pid" ] || continue
 
  echo "$cmd" | grep -qE "$MCP_WHITELIST" && continue
 
  # Skip if already killed via PGID
  already_killed=false
  if [ ${#killed_pgids[@]} -gt 0 ]; then
- pid_pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
  for kpgid in "${killed_pgids[@]}"; do
  [ "$pid_pgid" = "$kpgid" ] && already_killed=true && break
  done
  fi
  $already_killed && continue
 
- log "KILL SIGTERM orphan PID=$pid CPU=${cpu}% MEM=${mem}% ELAPSED=$etime CMD=$cmd"
+ cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' ')
+ mem=$(ps -o %mem= -p "$pid" 2>/dev/null | tr -d ' ')
+ etime=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
+ log "KILL SIGTERM orphan PID=$pid CPU=${cpu}% MEM=${mem}% ELAPSED=$etime CMD=$(echo "$cmd" | head -c 80)"
  kill "$pid" 2>/dev/null
  kill_pids+=("$pid")
- done <<< "$orphans"
-fi
+done < <(ccr_known_orphan_pids)
 
 total_pgids=${#killed_pgids[@]}
 total_pids=${#kill_pids[@]}

@@ -28,8 +28,10 @@ echo "[1/5] Installing shell functions..."
 mkdir -p "$REAPER_DIR/logs"
 cp "$SCRIPT_DIR/shell/claude-cleanup.sh" "$REAPER_DIR/claude-cleanup.sh"
 cp "$SCRIPT_DIR/shell/claude-cleanup-runtime.bash" "$REAPER_DIR/claude-cleanup-runtime.bash"
+cp "$SCRIPT_DIR/shell/claude-process-ledger.bash" "$REAPER_DIR/claude-process-ledger.bash"
 chmod 644 "$REAPER_DIR/claude-cleanup.sh"
 chmod 644 "$REAPER_DIR/claude-cleanup-runtime.bash"
+chmod 644 "$REAPER_DIR/claude-process-ledger.bash"
 
 SHELL_SOURCE="source \"$REAPER_DIR/claude-cleanup.sh\""
 
@@ -113,9 +115,9 @@ else
 fi
 echo ""
   echo "  Choose a daemon for continuous orphan cleanup:"
-echo "    a) proc-janitor  — Feature-rich Rust daemon (grace period, whitelist, logging)"
+echo "    a) proc-janitor  — Feature-rich Rust daemon (regex-based orphan cleanup, less precise)"
 echo "                       Requires: Homebrew or Cargo"
-echo "    b) LaunchAgent   — Zero-dependency macOS native suite"
+echo "    b) LaunchAgent   — Zero-dependency macOS native suite (recommended)"
 echo "                       Includes: orphan monitor (10 min), session guard (2 min), disk inspector (1 hr)"
 echo ""
 printf "  Your choice [a/b] (default: b): "

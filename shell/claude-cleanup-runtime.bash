@@ -1,6 +1,10 @@
 # Claude Code cleanup shell functions
 # Runtime implementation executed under bash
 
+_claude_runtime_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$_claude_runtime_dir/claude-process-ledger.bash"
+
 _claude_mcp_whitelist_regex() {
   echo "${CC_MCP_WHITELIST:-supabase|@stripe/mcp|context7|claude-mem|chroma-mcp}"
 }
@@ -20,19 +24,7 @@ _claude_is_whitelisted_mcp_cmd() {
 }
 
 _claude_session_pids() {
-  ps -eo pid,ppid,tty,command 2>/dev/null | awk '
-    $2 != 1 &&
-    $3 != "??" &&
-    $0 ~ /claude/ &&
-    $0 !~ /stream-json/ &&
-    $0 !~ /worker-service/ &&
-    $0 !~ /claude-cleanup\.sh/ &&
-    $0 !~ /stop-cleanup-orphans\.sh/ &&
-    $0 !~ /cc-reaper/ &&
-    $0 !~ /mcp-server/ {
-      print $1
-    }
-  '
+  ccr_live_session_pids
 }
 
 _claude_active_session_count() {
@@ -238,9 +230,9 @@ claude-cleanup() {
   echo "=== Claude Code Orphan Process Cleanup ==="
 
   local pgid_kills=0
-  local orphan_pgids leader_pattern mcp_pattern
+  local orphan_pgids leader_pattern
   leader_pattern=$(_claude_subagent_pattern)
-  mcp_pattern=$(_claude_orphan_mcp_pattern)
+  ccr_refresh_active_session_snapshots
 
   orphan_pgids=$(ps -eo pid,ppid,pgid 2>/dev/null | awk '$1 == $3 && $2 == 1 {print $3}' | sort -u)
   for pgid in $orphan_pgids; do
@@ -263,17 +255,11 @@ claude-cleanup() {
   done
 
   local fallback_candidates=0
-  while IFS= read -r pid; do
+  while IFS=$'\t' read -r pid _pgid cmd; do
     [ -z "$pid" ] && continue
-    local cmd
-    cmd=$(ps -o command= -p "$pid" 2>/dev/null)
     _claude_is_whitelisted_mcp_cmd "$cmd" && continue
     fallback_candidates=$((fallback_candidates + 1))
-  done < <(
-    ps -eo pid,ppid,command 2>/dev/null | awk '$2 == 1' | \
-      grep -E "($leader_pattern)|($mcp_pattern)" | \
-      awk '{print $1}'
-  )
+  done < <(ccr_known_orphan_pids)
 
   if [ "$pgid_kills" -eq 0 ] && [ "$fallback_candidates" -eq 0 ]; then
     echo "No orphan processes found."
@@ -283,31 +269,19 @@ claude-cleanup() {
   [ "$pgid_kills" -gt 0 ] && echo "  PGID-based: killed $pgid_kills processes"
   [ "$fallback_candidates" -gt 0 ] && echo "  Pattern fallback: $fallback_candidates escaped orphan(s)"
 
-  while IFS= read -r pid; do
+  while IFS=$'\t' read -r pid _pgid cmd; do
     [ -z "$pid" ] && continue
-    local cmd
-    cmd=$(ps -o command= -p "$pid" 2>/dev/null)
     _claude_is_whitelisted_mcp_cmd "$cmd" && continue
     kill "$pid" 2>/dev/null
-  done < <(
-    ps -eo pid,ppid,command 2>/dev/null | awk '$2 == 1' | \
-      grep -E "($leader_pattern)|($mcp_pattern)" | \
-      awk '{print $1}'
-  )
+  done < <(ccr_known_orphan_pids)
 
   sleep 1
   local remaining=0
-  while IFS= read -r pid; do
+  while IFS=$'\t' read -r pid _pgid cmd; do
     [ -z "$pid" ] && continue
-    local cmd
-    cmd=$(ps -o command= -p "$pid" 2>/dev/null)
     _claude_is_whitelisted_mcp_cmd "$cmd" && continue
     remaining=$((remaining + 1))
-  done < <(
-    ps -eo pid,ppid,command 2>/dev/null | awk '$2 == 1' | \
-      grep -E "($leader_pattern)|($mcp_pattern)" | \
-      awk '{print $1}'
-  )
+  done < <(ccr_known_orphan_pids)
 
   echo "Cleaned. Remaining orphans: $remaining"
 }
