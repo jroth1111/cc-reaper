@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+ <key>Label</key>
+ <string>com.cc-reaper.guard-monitor</string>
+
+ <key>ProgramArguments</key>
+ <array>
+ <string>/bin/bash</string>
+ <string>__HOME__/.cc-reaper/cc-reaper-guard-monitor.sh</string>
+ </array>
+
+ <!-- Run every 120 seconds -->
+ <key>StartInterval</key>
+ <integer>120</integer>
+
+ <key>RunAtLoad</key>
+ <true/>
+
+ <key>StandardOutPath</key>
+ <string>__HOME__/.cc-reaper/logs/guard-launchd-stdout.log</string>
+
+ <key>StandardErrorPath</key>
+ <string>__HOME__/.cc-reaper/logs/guard-launchd-stderr.log</string>
+
+ <key>EnvironmentVariables</key>
+ <dict>
+ <key>CC_MAX_SESSIONS</key>
+ <string>3</string>
+ <key>CC_IDLE_THRESHOLD</key>
+ <string>1</string>
+ <key>CC_MAX_RSS_MB</key>
+ <string>4096</string>
+ <key>CC_MAX_DESCENDANTS</key>
+ <string>128</string>
+ <key>CC_MAX_ZOMBIES</key>
+ <string>16</string>
+ <key>CC_USE_FOOTPRINT</key>
+ <string>1</string>
+ <key>CC_GUARD_NOTIFY</key>
+ <string>0</string>
+ </dict>
+</dict>
+</plist>
