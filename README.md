@@ -1,6 +1,6 @@
 # cc-reaper
 
-Automated cleanup and guard rails for Claude Code leaks: orphaned subagents/MCP servers, bloated live sessions, runaway child trees, and disk spillover from temp/session artifacts.
+Automated cleanup and guard rails for Claude Code leaks: orphaned subagents/MCP servers, runaway child trees, and inspect-first visibility into live-session pressure and disk growth.
 
 ## The Problem
 
@@ -16,7 +16,7 @@ This is a [widely reported issue](https://github.com/anthropics/claude-code/issu
 | MCP servers (short-lived) | `npx mcp-server-cloudflare`, `npm exec mcp-*`, etc. | 40-110 MB each |
 | claude-mem worker | `worker-service.cjs --daemon` (bun) | 100 MB |
 
-> **Not killed**: Long-running MCP servers shared across sessions (Supabase, Stripe, context7, claude-mem, chroma-mcp) are whitelisted across all cleanup layers — including PGID group kills. When a session ends, its stop hook and `claude-guard` skip whitelisted MCP servers so other sessions can continue using them.
+> **Preserved by default**: Long-running MCP servers shared across sessions (Supabase, Stripe, context7, claude-mem, chroma-mcp) are whitelisted across all cleanup layers. `~/.claude/projects` session logs and `~/.claude/tasks` files are inspect-only and never deleted by `cc-reaper`.
 
 ## Solution: Five-Layer Defense
 
@@ -27,7 +27,7 @@ Session ends normally
   └── Stop hook — kills session's process group via PGID (catches all children)
 
 Session leaks while still running
-  └── claude-guard — reaps bloated sessions, runaway child trees, and zombie explosions
+  └── claude-guard — alert-first for bloated/idle/descendant-heavy sessions, auto-reaps only explicitly enabled conditions
   └── LaunchAgent guard monitor — runs claude-guard every 2 minutes on macOS
 
 Session crashes / terminal force-closed
@@ -35,7 +35,7 @@ Session crashes / terminal force-closed
   └── OR: LaunchAgent orphan monitor — zero-dependency macOS native, PGID group kill + PPID=1 fallback
 
 Disk and startup hygiene
-  └── disk monitor — cleans stale temp/task artifacts and surfaces oversized session logs
+  └── disk monitor — inspect-only visibility for temp growth, Claude tasks, and full session logs
 
 Manual intervention needed
   └── claude-cleanup — finds orphaned PGIDs (leader has PPID=1), kills entire groups
@@ -87,10 +87,10 @@ Commands available after restart:
 - `claude-ram` — show RAM/CPU usage breakdown with per-session details and orphan visibility (read-only)
 - `claude-sessions` — list all active sessions with idle/runaway detection, descendant counts, zombie counts, and session memory
 - `claude-cleanup` — kill orphan processes immediately (PGID group kill + pattern fallback)
-- `claude-guard` — automatic session reaper: kills bloated sessions, runaway child/zombie explosions, and excess idle sessions
+- `claude-guard` — safety-first session guard: alerts on bloated/idle sessions by default and only auto-kills explicitly enabled conditions
 - `claude-guard --dry-run` — preview what claude-guard would kill without actually killing
 - `claude-disk` — inspect Claude temp files, task files, and large session logs
-- `claude-clean-disk --force` — remove Claude temp files
+- `claude-clean-disk --force` — remove `/private/tmp/claude-$UID` only when no Claude sessions are active
 
 ### 2. Claude Code Stop Hook
 
@@ -143,7 +143,7 @@ Native macOS approach — no Homebrew or Rust required. Installs three agents:
 
 - orphan monitor — every 10 minutes, PPID=1 + PGID cleanup
 - guard monitor — every 2 minutes, runs `claude-guard`
-- disk monitor — every hour, trims temp/task artifacts
+- disk monitor — every hour, records temp/task/log growth without deleting preserved artifacts
 
 ```bash
 mkdir -p ~/.cc-reaper/logs
@@ -207,14 +207,14 @@ proc-janitor status   # check daemon health
 
 ## Automatic Session Guard
 
-`claude-guard` is an automatic session reaper that prevents runaway memory consumption. It operates in three phases:
+`claude-guard` is a safety-first session guard. By default it only auto-kills zombie explosions. Memory-heavy sessions, descendant-heavy live sessions, and excess idle sessions are reported as inspect-only alerts unless you opt into destructive behavior with environment variables. It operates in three phases:
 
-1. **Runaway process-tree kill** — Sessions whose descendant count exceeds `CC_MAX_DESCENDANTS` or whose zombie count exceeds `CC_MAX_ZOMBIES` are killed immediately. This directly mitigates statusline/process-table explosions like [#34092](https://github.com/anthropics/claude-code/issues/34092).
-2. **Bloated session kill** — Sessions whose session memory exceeds `CC_MAX_RSS_MB` are killed immediately via PGID, regardless of whether they're idle or active. On macOS, the guard prefers `footprint` over RSS when the real footprint is larger, which helps with IOAccelerator/WebKit-style leaks like [#35804](https://github.com/anthropics/claude-code/issues/35804).
-3. **Idle session eviction** — If session count still exceeds `CC_MAX_SESSIONS`, the oldest idle sessions are killed.
+1. **Zombie explosion kill** — Sessions whose zombie count exceeds `CC_MAX_ZOMBIES` are killed immediately by default. This directly mitigates statusline/process-table failures like [#34092](https://github.com/anthropics/claude-code/issues/34092).
+2. **Inspect-only pressure alerts** — Sessions whose descendant count exceeds `CC_MAX_DESCENDANTS` or whose session memory exceeds `CC_MAX_RSS_MB` are reported by default. On macOS, the guard prefers `footprint` over RSS when the real footprint is larger, which helps surface IOAccelerator/WebKit-style leaks like [#35804](https://github.com/anthropics/claude-code/issues/35804).
+3. **Optional idle eviction** — If session count exceeds `CC_MAX_SESSIONS`, the oldest idle sessions are only killed when `CC_GUARD_KILL_IDLE=1` is explicitly set.
 
 ```bash
-claude-guard            # run the guard (kills bloated + excess idle)
+claude-guard            # run the guard with safe defaults
 claude-guard --dry-run  # preview without killing
 ```
 
@@ -228,11 +228,22 @@ claude-guard --dry-run  # preview without killing
 | `CC_MAX_DESCENDANTS` | 128 | Descendant-process threshold before a session is treated as runaway |
 | `CC_MAX_ZOMBIES` | 16 | Zombie-process threshold before a session is treated as runaway |
 | `CC_USE_FOOTPRINT` | 1 | On macOS, use `footprint` when it reports more memory than RSS |
+| `CC_GUARD_KILL_ZOMBIES` | 1 | Auto-kill sessions that exceed `CC_MAX_ZOMBIES` |
+| `CC_GUARD_KILL_DESCENDANTS` | 0 | Auto-kill sessions that exceed `CC_MAX_DESCENDANTS` |
+| `CC_GUARD_KILL_BLOATED` | 0 | Auto-kill sessions that exceed `CC_MAX_RSS_MB` |
+| `CC_GUARD_KILL_IDLE` | 0 | Auto-kill oldest idle sessions when above `CC_MAX_SESSIONS` |
 
-Example: lower the threshold to 2 GB for memory-constrained machines:
+Example: lower the threshold to 2 GB but keep inspect-only behavior:
 
 ```bash
 export CC_MAX_RSS_MB=2048
+claude-guard
+```
+
+Example: opt into automatic bloated-session reaping:
+
+```bash
+export CC_GUARD_KILL_BLOATED=1
 claude-guard
 ```
 
