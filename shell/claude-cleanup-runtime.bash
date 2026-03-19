@@ -75,6 +75,18 @@ _claude_group_reap_pids() {
   done < <(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {print $1}')
 }
 
+_claude_group_cpu_int() {
+  local target_pid=$1
+  local pgid
+  pgid=$(ps -o pgid= -p "$target_pid" 2>/dev/null | tr -d ' ')
+  [ -n "$pgid" ] && [ "$pgid" != "0" ] || { echo 0; return; }
+
+  ps -eo pgid=,%cpu= 2>/dev/null | awk -v pgid="$pgid" '
+    $1 == pgid { sum += $2 }
+    END { printf "%d\n", sum + 0 }
+  '
+}
+
 _claude_session_pids() {
   ccr_live_session_pids
 }
@@ -479,8 +491,8 @@ claude-sessions() {
   local total_mb=0
   local total_desc=0
   local total_zombies=0
-  local max_descendants=${CC_MAX_DESCENDANTS:-128}
-  local max_zombies=${CC_MAX_ZOMBIES:-16}
+ local max_descendants=${CC_MAX_DESCENDANTS:-256}
+ local max_zombies=${CC_MAX_ZOMBIES:-64}
 
   while IFS= read -r pid; do
     [ -z "$pid" ] && continue
@@ -544,71 +556,66 @@ claude-guard() {
     $quiet || echo "$@"
   }
 
-  local max_sessions=${CC_MAX_SESSIONS:-3}
-  local idle_threshold=${CC_IDLE_THRESHOLD:-1}
-  local max_rss_mb=${CC_MAX_RSS_MB:-4096}
-  local max_descendants=${CC_MAX_DESCENDANTS:-128}
-  local max_zombies=${CC_MAX_ZOMBIES:-16}
-  local max_growth_mb_per_min=${CC_MAX_GROWTH_MB_PER_MIN:-512}
-  local min_growth_mem_mb=${CC_GUARD_MIN_GROWTH_MEM_MB:-1024}
-  local min_kill_age_secs=${CC_GUARD_MIN_KILL_AGE_SECONDS:-180}
-  local confirm_zombies=${CC_GUARD_CONFIRM_ZOMBIES:-2}
-  local confirm_descendants=${CC_GUARD_CONFIRM_DESCENDANTS:-4}
-  local confirm_growth=${CC_GUARD_CONFIRM_GROWTH:-2}
-  local confirm_bloated_idle=${CC_GUARD_CONFIRM_BLOATED_IDLE:-2}
-  local confirm_bloated_active=${CC_GUARD_CONFIRM_BLOATED_ACTIVE:-6}
-  local kill_bloated=${CC_GUARD_KILL_BLOATED:-0}
-  local kill_idle=${CC_GUARD_KILL_IDLE:-0}
-  local kill_descendants=${CC_GUARD_KILL_DESCENDANTS:-0}
-  local kill_growth=${CC_GUARD_KILL_GROWTH:-0}
-  local kill_zombies=${CC_GUARD_KILL_ZOMBIES:-1}
+ local max_sessions=${CC_MAX_SESSIONS:-3}
+ local idle_threshold=${CC_IDLE_THRESHOLD:-1}
+ local max_rss_mb=${CC_MAX_RSS_MB:-8192}
+ local max_descendants=${CC_MAX_DESCENDANTS:-256}
+ local max_zombies=${CC_MAX_ZOMBIES:-64}
+ local max_growth_mb_per_min=${CC_MAX_GROWTH_MB_PER_MIN:-1024}
+ local min_growth_mem_mb=${CC_GUARD_MIN_GROWTH_MEM_MB:-2048}
+ local min_kill_age_secs=${CC_GUARD_MIN_KILL_AGE_SECONDS:-300}
+ local confirm_zombies=${CC_GUARD_CONFIRM_ZOMBIES:-3}
+ local confirm_descendants=${CC_GUARD_CONFIRM_DESCENDANTS:-6}
+ local confirm_growth=${CC_GUARD_CONFIRM_GROWTH:-3}
+ local confirm_bloated=${CC_GUARD_CONFIRM_BLOATED:-3}
+ local kill_bloated=${CC_GUARD_KILL_BLOATED:-0}
+ local kill_idle=${CC_GUARD_KILL_IDLE:-0}
+ local kill_descendants=${CC_GUARD_KILL_DESCENDANTS:-0}
+ local kill_growth=${CC_GUARD_KILL_GROWTH:-0}
+ local kill_zombies=${CC_GUARD_KILL_ZOMBIES:-0}
   local now_ts
   now_ts=$(date +%s)
 
-  if ! echo "$max_rss_mb" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_MAX_RSS_MB='$max_rss_mb' is not numeric, using default 4096"
-    max_rss_mb=4096
-  fi
-  if ! echo "$max_descendants" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_MAX_DESCENDANTS='$max_descendants' is not numeric, using default 128"
-    max_descendants=128
-  fi
-  if ! echo "$max_zombies" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_MAX_ZOMBIES='$max_zombies' is not numeric, using default 16"
-    max_zombies=16
-  fi
-  if ! echo "$max_growth_mb_per_min" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_MAX_GROWTH_MB_PER_MIN='$max_growth_mb_per_min' is not numeric, using default 512"
-    max_growth_mb_per_min=512
-  fi
-  if ! echo "$min_growth_mem_mb" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_GUARD_MIN_GROWTH_MEM_MB='$min_growth_mem_mb' is not numeric, using default 1024"
-    min_growth_mem_mb=1024
-  fi
-  if ! echo "$min_kill_age_secs" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_GUARD_MIN_KILL_AGE_SECONDS='$min_kill_age_secs' is not numeric, using default 180"
-    min_kill_age_secs=180
-  fi
-  if ! echo "$confirm_zombies" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_GUARD_CONFIRM_ZOMBIES='$confirm_zombies' is not numeric, using default 2"
-    confirm_zombies=2
-  fi
-  if ! echo "$confirm_descendants" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_GUARD_CONFIRM_DESCENDANTS='$confirm_descendants' is not numeric, using default 4"
-    confirm_descendants=4
-  fi
-  if ! echo "$confirm_growth" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_GUARD_CONFIRM_GROWTH='$confirm_growth' is not numeric, using default 2"
-    confirm_growth=2
-  fi
-  if ! echo "$confirm_bloated_idle" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_GUARD_CONFIRM_BLOATED_IDLE='$confirm_bloated_idle' is not numeric, using default 2"
-    confirm_bloated_idle=2
-  fi
-  if ! echo "$confirm_bloated_active" | grep -qE '^[0-9]+$'; then
-    _say "WARNING: CC_GUARD_CONFIRM_BLOATED_ACTIVE='$confirm_bloated_active' is not numeric, using default 6"
-    confirm_bloated_active=6
-  fi
+ if ! echo "$max_rss_mb" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_MAX_RSS_MB='$max_rss_mb' is not numeric, using default 8192"
+ max_rss_mb=8192
+ fi
+ if ! echo "$max_descendants" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_MAX_DESCENDANTS='$max_descendants' is not numeric, using default 256"
+ max_descendants=256
+ fi
+ if ! echo "$max_zombies" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_MAX_ZOMBIES='$max_zombies' is not numeric, using default 64"
+ max_zombies=64
+ fi
+ if ! echo "$max_growth_mb_per_min" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_MAX_GROWTH_MB_PER_MIN='$max_growth_mb_per_min' is not numeric, using default 1024"
+ max_growth_mb_per_min=1024
+ fi
+ if ! echo "$min_growth_mem_mb" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_GUARD_MIN_GROWTH_MEM_MB='$min_growth_mem_mb' is not numeric, using default 2048"
+ min_growth_mem_mb=2048
+ fi
+ if ! echo "$min_kill_age_secs" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_GUARD_MIN_KILL_AGE_SECONDS='$min_kill_age_secs' is not numeric, using default 300"
+ min_kill_age_secs=300
+ fi
+ if ! echo "$confirm_zombies" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_GUARD_CONFIRM_ZOMBIES='$confirm_zombies' is not numeric, using default 3"
+ confirm_zombies=3
+ fi
+ if ! echo "$confirm_descendants" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_GUARD_CONFIRM_DESCENDANTS='$confirm_descendants' is not numeric, using default 6"
+ confirm_descendants=6
+ fi
+ if ! echo "$confirm_growth" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_GUARD_CONFIRM_GROWTH='$confirm_growth' is not numeric, using default 3"
+ confirm_growth=3
+ fi
+ if ! echo "$confirm_bloated" | grep -qE '^[0-9]+$'; then
+ _say "WARNING: CC_GUARD_CONFIRM_BLOATED='$confirm_bloated' is not numeric, using default 3"
+ confirm_bloated=3
+ fi
 
   _claude_guard_prune_samples
 
@@ -692,17 +699,17 @@ claude-guard() {
 
     session_status="LIVE"
     reason=""
-    if [ "$zombie_count" -ge "$max_zombies" ]; then
-      session_status="[RUNAWAY]"
-      reason="zombies"
-      if [ "$kill_zombies" = "1" ] && [ "$zombie_hits" -ge "$confirm_zombies" ]; then
-        forced_pids+=("$pid")
-        forced_reason+=("$reason")
-        forced_metric+=("$zombie_count")
-      else
-        alert_rows="${alert_rows}zombies\t${pid}\t${etime}\t${zombie_count}\t${mem_mb}\n"
-        session_status="[RUNAWAY:ALERT]"
-      fi
+ if [ "$zombie_count" -ge "$max_zombies" ]; then
+ session_status="[RUNAWAY]"
+ reason="zombies"
+ if [ "$kill_zombies" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && [ "$zombie_hits" -ge "$confirm_zombies" ] && [ "$cpu_int" -lt "$idle_threshold" ]; then
+ forced_pids+=("$pid")
+ forced_reason+=("$reason")
+ forced_metric+=("$zombie_count")
+ else
+ alert_rows="${alert_rows}zombies\\t${pid}\\t${etime}\\t${zombie_count}\\t${mem_mb}\\n"
+ session_status="[RUNAWAY:ALERT]"
+ fi
     elif [ "$desc_count" -ge "$max_descendants" ]; then
       session_status="[RUNAWAY]"
       reason="descendants"
@@ -714,30 +721,28 @@ claude-guard() {
         alert_rows="${alert_rows}descendants\t${pid}\t${etime}\t${desc_count}\t${mem_mb}\n"
         session_status="[RUNAWAY:ALERT]"
       fi
-    elif [ "$mem_mb" -ge "$min_growth_mem_mb" ] && [ "$growth_rate" -ge "$max_growth_mb_per_min" ]; then
-      session_status="[LEAKING]"
-      reason="growth"
-      if [ "$kill_growth" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && [ "$growth_hits" -ge "$confirm_growth" ]; then
-        forced_pids+=("$pid")
-        forced_reason+=("$reason")
-        forced_metric+=("$growth_rate")
-      else
-        alert_rows="${alert_rows}growth\t${pid}\t${etime}\t${growth_rate}\t${mem_mb}\n"
-        session_status="[LEAKING:ALERT]"
-      fi
-    elif [ "$mem_mb" -ge "$max_rss_mb" ]; then
-      session_status="[BLOATED]"
-      reason="memory"
-      if [ "$kill_bloated" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && \
-         { { [ "$cpu_int" -lt "$idle_threshold" ] && [ "$mem_hits" -ge "$confirm_bloated_idle" ]; } || \
-           { [ "$cpu_int" -ge "$idle_threshold" ] && [ "$mem_hits" -ge "$confirm_bloated_active" ]; }; }; then
-        forced_pids+=("$pid")
-        forced_reason+=("$reason")
-        forced_metric+=("$mem_mb")
-      else
-        alert_rows="${alert_rows}memory\t${pid}\t${etime}\t${mem_mb}\t${mem_mb}\n"
-        session_status="[BLOATED:ALERT]"
-      fi
+ elif [ "$mem_mb" -ge "$min_growth_mem_mb" ] && [ "$growth_rate" -ge "$max_growth_mb_per_min" ]; then
+ session_status="[LEAKING]"
+ reason="growth"
+ if [ "$kill_growth" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && [ "$growth_hits" -ge "$confirm_growth" ] && [ "$cpu_int" -lt "$idle_threshold" ]; then
+ forced_pids+=("$pid")
+ forced_reason+=("$reason")
+ forced_metric+=("$growth_rate")
+ else
+ alert_rows="${alert_rows}growth\\t${pid}\\t${etime}\\t${growth_rate}\\t${mem_mb}\\n"
+ session_status="[LEAKING:ALERT]"
+ fi
+ elif [ "$mem_mb" -ge "$max_rss_mb" ]; then
+ session_status="[BLOATED]"
+ reason="memory"
+ if [ "$kill_bloated" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && [ "$cpu_int" -lt "$idle_threshold" ] && [ "$mem_hits" -ge "$confirm_bloated" ]; then
+ forced_pids+=("$pid")
+ forced_reason+=("$reason")
+ forced_metric+=("$mem_mb")
+ else
+ alert_rows="${alert_rows}memory\\t${pid}\\t${etime}\\t${mem_mb}\\t${mem_mb}\\n"
+ session_status="[BLOATED:ALERT]"
+ fi
     elif [ "$cpu_int" -lt "$idle_threshold" ]; then
       session_status="[IDLE]"
       idle_rows="${idle_rows}${age_secs}\t${pid}\t${etime}\t${mem_mb}\n"
