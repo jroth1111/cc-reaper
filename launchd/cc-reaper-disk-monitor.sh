@@ -32,18 +32,25 @@ TMP_GB=$((TMP_KB / 1048576))
 
 log "Temp directory: ${TMP_GB}GB (threshold: ${MAX_GB}GB)"
 
-# Clean old files first (regardless of size)
-OLD_FILES=$(find "$CLAUDE_TMP" -name "*.output" -type f -mtime +$MAX_AGE_DAYS 2>/dev/null)
-if [ -n "$OLD_FILES" ]; then
- OLD_COUNT=$(echo "$OLD_FILES" | wc -l | tr -d ' ')
- echo "$OLD_FILES" | xargs rm -f 2>/dev/null
- log "Deleted $OLD_COUNT files older than $MAX_AGE_DAYS days"
-fi
+# Clean old .output files first (regardless of size)
+OUTPUT_BEFORE=$(find "$CLAUDE_TMP" -name "*.output" -type f 2>/dev/null | wc -l | tr -d ' ')
+find "$CLAUDE_TMP" -name "*.output" -type f -mtime +$MAX_AGE_DAYS -delete 2>/dev/null
+OUTPUT_AFTER=$(find "$CLAUDE_TMP" -name "*.output" -type f 2>/dev/null | wc -l | tr -d ' ')
+OUTPUT_DELETED=$((OUTPUT_BEFORE - OUTPUT_AFTER))
+[ "$OUTPUT_DELETED" -gt 0 ] && log "Deleted $OUTPUT_DELETED old .output files (>$MAX_AGE_DAYS days)"
 
-# If still over threshold, clean everything
+# Clean old task directories (abandoned sessions)
+DIRS_BEFORE=$(find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d -mtime +$MAX_AGE_DAYS -exec rm -rf {} \; 2>/dev/null
+DIRS_AFTER=$(find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+DIRS_DELETED=$((DIRS_BEFORE - DIRS_AFTER))
+[ "$DIRS_DELETED" -gt 0 ] && log "Deleted $DIRS_DELETED old session directories (>$MAX_AGE_DAYS days)"
+
+# Recalculate size after age-based cleanup
 TMP_KB=$(du -sk "$CLAUDE_TMP" 2>/dev/null | awk '{print $1}')
 TMP_GB=$((TMP_KB / 1048576))
 
+# If still over threshold, clean everything
 if [ "$TMP_GB" -ge "$MAX_GB" ]; then
  log "Threshold exceeded (${TMP_GB}GB >= ${MAX_GB}GB), cleaning all temp files"
  rm -rf "$CLAUDE_TMP"
@@ -56,10 +63,9 @@ fi
 # Also clean old ~/.claude/tasks files
 CLAUDE_TASKS="$HOME/.claude/tasks"
 if [ -d "$CLAUDE_TASKS" ]; then
- OLD_TASKS=$(find "$CLAUDE_TASKS" -type f -mtime +$MAX_AGE_DAYS 2>/dev/null)
- if [ -n "$OLD_TASKS" ]; then
- TASKS_COUNT=$(echo "$OLD_TASKS" | wc -l | tr -d ' ')
- echo "$OLD_TASKS" | xargs rm -f 2>/dev/null
- log "Deleted $TASKS_COUNT old task files from ~/.claude/tasks"
- fi
+ TASKS_BEFORE=$(find "$CLAUDE_TASKS" -type f 2>/dev/null | wc -l | tr -d ' ')
+ find "$CLAUDE_TASKS" -type f -mtime +$MAX_AGE_DAYS -delete 2>/dev/null
+ TASKS_AFTER=$(find "$CLAUDE_TASKS" -type f 2>/dev/null | wc -l | tr -d ' ')
+ TASKS_DELETED=$((TASKS_BEFORE - TASKS_AFTER))
+ [ "$TASKS_DELETED" -gt 0 ] && log "Deleted $TASKS_DELETED old files from ~/.claude/tasks"
 fi

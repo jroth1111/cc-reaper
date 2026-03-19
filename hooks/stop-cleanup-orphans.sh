@@ -11,34 +11,70 @@
 # third-party MCP servers, without needing pattern maintenance.
 #
 # WHITELIST: Long-running MCP servers shared across sessions are excluded.
-# They survive session ends so other sessions can continue using them.
-# Pattern-based fallback below also excludes these (see NOTE comment).
-MCP_WHITELIST="supabase|@stripe/mcp|context7|claude-mem|chroma-mcp"
+MCP_WHITELIST="${CC_MCP_WHITELIST:-supabase|@stripe/mcp|context7|claude-mem|chroma-mcp}"
 
 SESSION_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+
 if [ -n "$SESSION_PGID" ] && [ "$SESSION_PGID" != "0" ] && [ "$SESSION_PGID" != "1" ]; then
-  # Kill group members except: this script, Claude CLI parent, whitelisted MCP servers
-  while IFS= read -r pid; do
-    [ -z "$pid" ] && continue
-    pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
-    if echo "$pid_cmd" | grep -qE "$MCP_WHITELIST"; then
-      continue
-    fi
-    kill "$pid" 2>/dev/null
-  done < <(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$SESSION_PGID" -v me="$$" -v parent="$PPID" \
-    '$2 == pgid && $1 != me && $1 != parent {print $1}')
+ # Collect PIDs to kill (excluding this script, parent, and whitelisted)
+ pids_to_kill=""
+ while IFS= read -r pid; do
+ [ -z "$pid" ] && continue
+ pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+ if echo "$pid_cmd" | grep -qE "$MCP_WHITELIST"; then
+ continue
+ fi
+ pids_to_kill="$pids_to_kill $pid"
+ done < <(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$SESSION_PGID" -v me="$$" -v parent="$PPID" \
+ '$2 == pgid && $1 != me && $1 != parent {print $1}')
+
+ # Send SIGTERM first for graceful shutdown
+ for pid in $pids_to_kill; do
+ [ -n "$pid" ] && kill "$pid" 2>/dev/null
+ done
+
+ # Wait briefly then SIGKILL survivors
+ sleep 2
+ for pid in $pids_to_kill; do
+ [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+ done
 fi
 
-# ─── Pattern-based fallback ──────────────────────────────────────────────────
-# Catches processes that escaped the process group (e.g., called setsid())
-# Only targets detached processes (TTY="??") to avoid killing active sessions.
-ps aux | grep "[c]laude.*stream-json" | awk '$7 == "??" {print $2}' | xargs kill 2>/dev/null
-ps aux | grep -E "[n]pm exec @upstash|[n]pm exec mcp-|[n]px.*mcp-server|[n]ode.*sequential-thinking" | awk '$7 == "??" {print $2}' | xargs kill 2>/dev/null
-ps aux | grep "[w]orker-service.cjs.*--daemon" | awk '$7 == "??" {print $2}' | xargs kill 2>/dev/null
-# NOTE: claude-mem, chroma-mcp, context7 are NOT killed here — they are
-# long-running MCP servers shared across sessions. PGID cleanup (above)
-# handles same-session processes; these survive for other sessions.
-ps aux | grep "[b]un.*worker-service" | awk '$7 == "??" {print $2}' | xargs kill 2>/dev/null
+# ─── Pattern-based fallback (PPID=1 only) ─────────────────────────────────────
+# Only kill processes that are TRUE orphans (PPID=1) and match our patterns.
+# This catches processes that escaped their process group via setsid().
+
+# Collect orphan PIDs to kill
+orphan_pids=""
+while IFS= read -r pid; do
+ [ -n "$pid" ] && orphan_pids="$orphan_pids $pid"
+done < <(ps -eo pid,ppid,command | awk '$2 == 1' | grep -E "[c]laude.*stream-json|[n]pm exec @upstash|[n]pm exec mcp-|[n]px.*mcp-server|[w]orker-service\\.cjs|[b]un.*worker-service" | awk '{print $1}')
+
+# Send SIGTERM
+for pid in $orphan_pids; do
+ [ -n "$pid" ] && kill "$pid" 2>/dev/null
+done
+
+# Wait then SIGKILL survivors
+sleep 1
+for pid in $orphan_pids; do
+ [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+done
+
+# ─── Caffeinate cleanup ───────────────────────────────────────────────────────
+# Only kill orphaned caffeinate if spawned by Claude (check process tree)
+# Claude's caffeinate will be in same session/tty as claude process
+
+# Find claude sessions to get their TTY
+claude_ttys=$(ps -eo tty,command | grep "[c]laude" | awk '{print $1}' | sort -u)
+
+# Kill orphaned caffeinate only if it matches a claude TTY
+for tty in $claude_ttys; do
+ [ -z "$tty" ] || [ "$tty" = "??" ] && continue
+ ps -eo pid,ppid,tty,command | awk -v tty="$tty" '$2 == 1 && $3 == tty' | grep "[c]affeinate" | awk '{print $1}' | while read pid; do
+ [ -n "$pid" ] && kill "$pid" 2>/dev/null
+ done
+done
 
 echo "[cleanup] Orphan Claude processes cleaned up."
 exit 0
