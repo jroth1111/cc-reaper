@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+ <key>Label</key>
+ <string>com.cc-reaper.disk-monitor</string>
+
+ <key>ProgramArguments</key>
+ <array>
+ <string>/bin/bash</string>
+ <string>__HOME__/.cc-reaper/cc-reaper-disk-monitor.sh</string>
+ </array>
+
+ <!-- Run every 3600 seconds (1 hour) -->
+ <key>StartInterval</key>
+ <integer>3600</integer>
+
+ <key>RunAtLoad</key>
+ <true/>
+
+ <key>StandardOutPath</key>
+ <string>__HOME__/.cc-reaper/logs/disk-launchd-stdout.log</string>
+
+ <key>StandardErrorPath</key>
+ <string>__HOME__/.cc-reaper/logs/disk-launchd-stderr.log</string>
+
+ <!-- Environment variables for configuration -->
+ <key>EnvironmentVariables</key>
+ <dict>
+ <key>CLAUDE_DISK_MAX_GB</key>
+ <string>10</string>
+ <key>CLAUDE_DISK_MAX_AGE_DAYS</key>
+ <string>7</string>
+ </dict>
+</dict>
+</plist>
