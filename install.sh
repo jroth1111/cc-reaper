@@ -217,6 +217,7 @@ else
 fi
 echo ""
 echo "Available commands (restart terminal or 'source $SHELL_RC'):"
+echo "  claude              Launch Claude Code with cc-reaper memory caps"
 echo "  claude-ram          Show Claude Code RAM/CPU usage breakdown"
 echo "  claude-cleanup      Immediately kill orphan processes"
 echo "  claude-sessions     List active sessions with idle detection"

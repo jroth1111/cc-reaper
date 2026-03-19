@@ -290,7 +290,7 @@ claude-cleanup() {
     fi
 
     local match_count group_pids group_size
-    match_count=$(ps -eo pgid,command 2>/dev/null | awk -v pgid="$pgid" '$1 == pgid' | grep -cE "claude|mcp|worker-service|docker run .*mcp/" 2>/dev/null || echo 0)
+    match_count=$(ps -eo pgid,command 2>/dev/null | awk -v pgid="$pgid" '$1 == pgid' | grep -cE "claude|mcp|worker-service|docker run .*mcp/" 2>/dev/null || true)
     if [ "$match_count" -gt 0 ]; then
       group_size=0
       while IFS= read -r pid; do
@@ -320,7 +320,7 @@ claude-cleanup() {
   fi
 
   [ "$pgid_kills" -gt 0 ] && echo "  PGID-based: killed $pgid_kills processes"
-  [ "$fallback_candidates" -gt 0 ] && echo "  Pattern fallback: $fallback_candidates escaped orphan(s)"
+  [ "$fallback_candidates" -gt 0 ] && echo "  Ledger fallback: $fallback_candidates escaped orphan(s)"
 
   while IFS=$'\t' read -r pid _pgid cmd; do
     [ -z "$pid" ] && continue
@@ -829,7 +829,7 @@ claude-health() {
  echo "--- Processes ---"
  local session_count orphan_count zombie_count
  session_count=$(_claude_active_session_count)
- orphan_count=$(ps -eo pid,ppid,command | awk '$2 == 1' | grep -c "[c]laude" 2>/dev/null || echo 0)
+ orphan_count=$(ps -eo pid,ppid,command | awk '$2 == 1' | grep -c "[c]laude" 2>/dev/null || true)
  zombie_count=$(ps -eo pid,ppid,stat | awk '$2 == 1 && $3 ~ /Z/ {count++} END {print count+0}')
  echo " Sessions: $session_count"
  echo " Orphans: $orphan_count"
@@ -846,7 +846,10 @@ claude-health() {
  echo ""
  echo "--- V8 Heap Cap ---"
  if echo "$NODE_OPTIONS" | grep -q "max-old-space-size"; then
- echo " ✓ NODE_OPTIONS set"
+ echo " ✓ NODE_OPTIONS set in environment"
+ elif [ "${CC_REAPER_AUTO_NODE_OPTIONS:-1}" != "0" ]; then
+ echo " ✓ cc-reaper will inject --max-old-space-size=${CC_NODE_MAX_OLD_SPACE_MB:-8192} into future 'claude' launches"
+ echo "   Use 'command claude' to bypass or export NODE_OPTIONS to override."
  else
  echo " ⚠️  NOT SET — V8 may reserve 50% RAM (#27788)"
  echo "    Fix: export NODE_OPTIONS=\"--max-old-space-size=8192\""
@@ -856,7 +859,7 @@ claude-health() {
 claude-check-growthbook() {
  echo "=== GrowthBook Connection Check (#32692) ==="
  local gb_conns
- gb_conns=$(lsof -i :443 2>/dev/null | grep -c "160.79.104.10" || echo "0")
+ gb_conns=$(lsof -i :443 2>/dev/null | grep -c "160.79.104.10" || true)
  if [ "$gb_conns" -gt 4 ]; then
  echo " ⚠️  $gb_conns GrowthBook connections — possible leak"
  echo "    Fix: export CLAUDE_CODE_DISABLE_GROWTHBOOK=1"
