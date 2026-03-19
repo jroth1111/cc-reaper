@@ -726,19 +726,84 @@ claude-clean-disk() {
 }
 
 _claude_disk_check() {
-  local claude_tmp="/private/tmp/claude-$(id -u)"
-  local max_gb=${CLAUDE_DISK_MAX_GB:-10}
+ local claude_tmp="/private/tmp/claude-$(id -u)"
+ local max_gb=${CLAUDE_DISK_MAX_GB:-10}
 
-  if [ -d "$claude_tmp" ]; then
-    local tmp_kb tmp_gb
-    tmp_kb=$(du -sk "$claude_tmp" 2>/dev/null | awk '{print $1}')
-    tmp_gb=$((tmp_kb / 1048576))
+ if [ -d "$claude_tmp" ]; then
+ local tmp_kb tmp_gb
+ tmp_kb=$(du -sk "$claude_tmp" 2>/dev/null | awk '{print $1}')
+ tmp_gb=$((tmp_kb / 1048576))
 
-    if [ "$tmp_gb" -ge "$max_gb" ]; then
-      echo "WARNING: Claude temp directory exceeds ${max_gb}GB: ${tmp_gb}GB" >&2
-      echo "Run 'claude-clean-disk --force' to clean" >&2
-      return 1
-    fi
-  fi
-  return 0
+ if [ "$tmp_gb" -ge "$max_gb" ]; then
+ echo "WARNING: Claude temp directory exceeds ${max_gb}GB: ${tmp_gb}GB" >&2
+ echo "Run 'claude-clean-disk --force' to clean" >&2
+ return 1
+ fi
+ fi
+ return 0
+ }
+
+claude-health() {
+ echo "=== Claude Code Health Check ==="
+ echo ""
+
+ echo "--- Memory ---"
+ local total_rss
+ total_rss=$(ps aux | grep -iE "[c]laude" | awk '{sum+=$6} END {printf "%.0f", sum/1024}')
+ echo " Total RSS: ${total_rss} MB"
+ [ "$(echo "$total_rss > 8000" | bc 2>/dev/null || echo 0)" -eq 1 ] && echo " ⚠️  High memory (>8GB)"
+
+ echo ""
+ echo "--- Processes ---"
+ local session_count orphan_count zombie_count
+ session_count=$(ps aux | grep "[c]laude --dangerously" | grep -v grep | wc -l | tr -d ' ')
+ orphan_count=$(ps -eo pid,ppid,command | awk '$2 == 1' | grep -c "[c]laude" 2>/dev/null || echo 0)
+ zombie_count=$(ps -eo pid,ppid,stat | awk '$2 == 1 && $3 ~ /Z/ {count++} END {print count+0}')
+ echo " Sessions: $session_count"
+ echo " Orphans: $orphan_count"
+ echo " Zombies: $zombie_count"
+ [ "$zombie_count" -gt 100 ] && echo " ⚠️  CRITICAL: Many zombies (#34092)"
+
+ echo ""
+ echo "--- Disk ---"
+ local tmp_size
+ tmp_size=$(du -sm /private/tmp/claude-$(id -u) 2>/dev/null | awk '{print $1}')
+ echo " Temp: ${tmp_size} MB"
+ [ "$(echo "$tmp_size > 5000" | bc 2>/dev/null || echo 0)" -eq 1 ] && echo " ⚠️  Large temp (#26911)"
+
+ echo ""
+ echo "--- V8 Heap Cap ---"
+ if echo "$NODE_OPTIONS" | grep -q "max-old-space-size"; then
+ echo " ✓ NODE_OPTIONS set"
+ else
+ echo " ⚠️  NOT SET — V8 may reserve 50% RAM (#27788)"
+ echo "    Fix: export NODE_OPTIONS=\"--max-old-space-size=8192\""
+ fi
+}
+
+claude-check-growthbook() {
+ echo "=== GrowthBook Connection Check (#32692) ==="
+ local gb_conns
+ gb_conns=$(lsof -i :443 2>/dev/null | grep -c "160.79.104.10" || echo "0")
+ if [ "$gb_conns" -gt 4 ]; then
+ echo " ⚠️  $gb_conns GrowthBook connections — possible leak"
+ echo "    Fix: export CLAUDE_CODE_DISABLE_GROWTHBOOK=1"
+ else
+ echo " ✓ Normal: $gb_conns connections"
+ fi
+}
+
+claude-check-zombies() {
+ echo "=== Zombie Process Check (#34092) ==="
+ local zombie_count
+ zombie_count=$(ps -eo pid,ppid,stat | awk '$2 == 1 && $3 ~ /Z/ {count++} END {print count+0}')
+ if [ "$zombie_count" -gt 100 ]; then
+ echo " ⚠️  CRITICAL: $zombie_count zombies!"
+ echo "    May indicate statusLine bug (#34092)"
+ echo "    Check ~/.claude/settings.json for statusLine config"
+ elif [ "$zombie_count" -gt 10 ]; then
+ echo " ⚠️  $zombie_count zombies"
+ else
+ echo " ✓ Normal: $zombie_count zombies"
+ fi
 }

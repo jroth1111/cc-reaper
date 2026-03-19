@@ -35,3 +35,6 @@ claude-sessions() { _claude_exec claude-sessions "$@"; }
 claude-guard() { _claude_exec claude-guard "$@"; }
 claude-disk() { _claude_exec claude-disk "$@"; }
 claude-clean-disk() { _claude_exec claude-clean-disk "$@"; }
+claude-health() { _claude_exec claude-health "$@"; }
+claude-check-growthbook() { _claude_exec claude-check-growthbook "$@"; }
+claude-check-zombies() { _claude_exec claude-check-zombies "$@"; }
