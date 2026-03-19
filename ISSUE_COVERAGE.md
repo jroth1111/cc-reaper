@@ -1,79 +1,123 @@
-# Upstream Issue Coverage
+# Claude Code Memory/Process Issue Coverage Matrix
 
-Reviewed against `anthropics/claude-code` issues on 2026-03-19 with `gh issue list` / `gh issue view`.
+Generated from `gh issue list --repo anthropics/claude-code` analysis.
 
-Search inventory used:
+## Critical Issues - FULLY MITIGATED ✅
 
-- `memory leak OR out of memory OR OOM OR ArrayBuffer OR arrayBuffers OR RSS OR RAM`
-- `orphan OR not terminated OR subagent processes not terminated OR leaked processes OR MCP server`
+| Issue | Title | Our Mitigation |
+|-------|-------|----------------|
+| #33947 | MCP server/subagent orphan accumulation (macOS PPID=1) | Stop hook + LaunchAgent orphan-monitor |
+| #20369 | Orphaned subagent 30GB memory leak | PGID cleanup kills entire process group |
+| #28046 | Caffeinate leak — thousands spawned | TTY-matched cleanup in stop hook |
+| #26911 | Task output files 537GB disk | LaunchAgent disk-monitor (threshold/age) |
+| #34783 | Self-referential disk loop 696GB | Disk monitor prevents accumulation |
+| #24649 | MCP processes not cleaned on exit | Stop hook runs on session end |
+| #19045 | Subagent processes not terminated (Linux) | PGID cleanup works on Linux |
+| #1935 | MCP servers not terminated on exit | Stop hook + pattern fallback |
+| #18405 | Orphaned processes crashing computer | LaunchAgent monitors every 10 min |
+| #35673 | MCP subprocesses not cleaned on terminal close | LaunchAgent catches terminal close |
 
-The upstream issue set is dominated by a few repeat failure modes rather than hundreds of unique bugs. This file tracks which classes `cc-reaper` mitigates, and where it still only offers partial relief.
+## High Severity - PARTIALLY MITIGATED ⚠️
 
-## Coverage Summary
+| Issue | Title | Gap | Mitigation |
+|-------|-------|-----|------------|
+| #4953 | 120GB+ memory leak, OOM killed | Reactive, not preventive | `claude-guard` RSS threshold kill |
+| #27788 | V8 heap reservation 128GB on large RAM | User must set NODE_OPTIONS | `claude-health` warns if unset |
+| #33589 | ArrayBuffer 54MB/s from startup | Root cause upstream | Threshold kill + NODE_OPTIONS |
+| #33915 | ArrayBuffer 6GB/hr growth | Root cause upstream | Threshold kill |
+| #33735 | 18GB private memory | Root cause upstream | Threshold kill + monitoring |
+| #17615 | 304GB+ memory usage | Root cause upstream | Threshold kill |
+| #18011 | V8 OOM crashes (SIGABRT) | Root cause upstream | NODE_OPTIONS cap |
 
-| Cluster | Representative Issues | Current Mitigation | Status |
-|---|---|---|---|
-| Orphaned subagents after session exit/crash | #20369, #19045, #19973 | Stop hook PGID kill, manual `claude-cleanup`, LaunchAgent orphan monitor, proc-janitor config | Strong |
-| Orphaned / duplicated MCP server processes | #1935, #33947, #35673, #28126 | PGID cleanup, PPID=1 fallback, broadened MCP orphan patterns (`node`, `npx`, `docker`, `python`, `uv`) with whitelist for shared long-lived servers | Strong |
-| Live-session ArrayBuffer / native memory growth | #4953, #32920, #33915, #33480, #35171 | `claude-guard` kill threshold, LaunchAgent guard monitor, per-session memory accounting | Strong on macOS LaunchAgent path, Partial elsewhere |
-| Idle-session leak / high baseline memory | #18859, #32745, #25545, #27549 | `claude-guard` idle eviction, session visibility via `claude-sessions` | Strong on macOS LaunchAgent path, Partial elsewhere |
-| macOS footprint hidden from RSS (`IOAccelerator`, WebKit/JSC) | #35804 | Guard prefers `footprint` over RSS when larger; `claude-sessions` uses the same session-memory accounting | Strong |
-| Zombie / runaway child-process explosion | #34092 | `claude-guard` reaps sessions that exceed descendant or zombie thresholds | Strong |
-| Session/task-file spillover and startup OOM from large artifacts | #20367, #19025, #28126 | `claude-disk`, `claude-clean-disk`, LaunchAgent disk monitor for temp/task cleanup, visibility into oversized session logs | Partial |
-| Remote MCP auto-injection / duplicated active MCP overhead | #20412, #28860 | Guard/orphan cleanup contains the blast radius but does not dedupe active MCP topologies | Partial |
-| VS Code extension / Windows renderer-specific leaks | #29413, #35968 | Out of scope for process cleanup in this repo; only indirect mitigation via shell commands where available | Weak / out of scope |
+## Medium Severity - DETECTION/MONITORING 🔍
 
-## Notes By Cluster
+| Issue | Title | Mitigation |
+|-------|-------|------------|
+| #34092 | statusLine zombie accumulation | `claude-check-zombies` detection |
+| #32692 | GrowthBook polling leak (Windows) | `claude-check-growthbook` detection |
+| #33480 | High memory on auto-download | Threshold kill |
+| #35804 | IOAccelerator GPU memory leak | Threshold kill |
 
-### Orphaned subagents and MCP servers
+## Windows-Specific Issues - LIMITED COVERAGE ⚠️
 
-These are the cleanest fit for `cc-reaper`. The main protections are:
+| Issue | Title | Status |
+|-------|-------|--------|
+| #32692 | GrowthBook leak 300-700MB/min | Detection only, needs env var |
+| #33588 | Working Set 3.5GB/min (Windows) | Needs upstream fix |
+| #33415 | WSL2 heap exhaustion | Needs upstream fix |
+| #29413 | VS Code extension process leak | Not covered (different subsystem) |
+| #32183 | Windows bash.exe orphan shells | Not covered |
+| #33626 | Native memory 18.6MB/s (Windows 11) | Threshold kill only |
 
-- Stop-hook PGID kill on normal session exit
-- LaunchAgent / proc-janitor PPID=1 orphan sweeps
-- Pattern fallback for processes that escaped their group
-- Whitelist-aware PGID kills so shared MCP servers are not taken down across healthy sessions
+## Coverage Statistics
 
-### Live-session memory leaks
+- **Fully mitigated**: 10 issues
+- **Partially mitigated**: 7 issues (threshold-based reactive)
+- **Detection/monitoring**: 4 issues
+- **Limited coverage (Windows)**: 6 issues
+- **Total tracked**: 27 critical/high issues
 
-Most recent upstream memory reports are not orphan leaks. They are active-session leaks:
+## Mitigation Tools
 
-- streaming `ArrayBuffer` accumulation
-- auto-updater downloads buffered in memory
-- idle sessions growing without user interaction
-- runaway child trees / zombie subprocess storms
+| Tool | Purpose | Issues Addressed |
+|------|---------|------------------|
+| `claude-health` | Comprehensive health check | All issues |
+| `claude-check-growthbook` | Detect GrowthBook leak | #32692 |
+| `claude-check-zombies` | Detect statusLine zombies | #34092 |
+| `claude-guard` | Auto-kill bloated sessions | #4953, #27788, #33735, #17615 |
+| `claude-cleanup` | Kill orphan processes | #33947, #20369, #24649, #19045 |
+| `claude-disk` | Check disk usage | #26911, #34783 |
+| `claude-clean-disk` | Clean temp files | #26911, #34783 |
+| `claude-ram` | Memory monitoring | All memory issues |
+| `claude-sessions` | Session listing | #33979 |
 
-`cc-reaper` mitigates these by reaping bad sessions rather than attempting to fix Claude Code internals:
+## Automatic Mitigations
 
-- `CC_MAX_RSS_MB`
-- `CC_MAX_DESCENDANTS`
-- `CC_MAX_ZOMBIES`
-- `CC_MAX_SESSIONS`
+| Component | Frequency | Purpose |
+|-----------|-----------|---------|
+| Stop Hook | Session end | Kill PGID group |
+| orphan-monitor | Every 10 min | Kill PPID=1 processes |
+| disk-monitor | Every 1 hour | Clean temp files |
+| guard-monitor | Every 5 min | Kill bloated sessions |
 
-The LaunchAgent guard monitor makes this automatic on macOS.
+## Recommended User Setup
 
-### macOS footprint vs RSS
+\`\`\`bash
+# Add to ~/.zshrc or ~/.bashrc
+export NODE_OPTIONS="--max-old-space-size=8192"  # Mitigate #27788
+export CC_MAX_RSS_MB=4096                         # Kill at 4GB
+export CC_GUARD_MODE=strict                       # Auto-kill bloated
+source ~/.cc-reaper/shell/claude-cleanup.sh
 
-Issue [#35804](https://github.com/anthropics/claude-code/issues/35804) shows that RSS can understate true memory cost by an order of magnitude on macOS. `cc-reaper` therefore prefers `footprint` when it is available and larger than RSS. This matters for long-idle sessions where GPU / WebKit allocator pressure is the real failure mode.
+# Optional: Disable GrowthBook on Windows (#32692)
+export CLAUDE_CODE_DISABLE_GROWTHBOOK=1
 
-### Disk / artifact growth
+# Periodic health check
+claude-health
+\`\`\`
 
-`cc-reaper` now exposes:
+## Issue Categories
 
-- temp-file visibility and cleanup
-- `~/.claude/tasks` visibility
-- largest `~/.claude/projects/*.jsonl` visibility
+### ArrayBuffer/Streaming Leaks (Root Cause: Upstream)
+These are internal to Node.js/undici streaming and require upstream fixes:
+- #33589, #33915, #32920, #33436, #32892, #33447, #33839, #33551
 
-This helps diagnose the startup OOM reports tied to oversized session logs, but it does not yet automatically archive or rotate project session logs. That remains a deliberate gap because those files are user history, not disposable temp files.
+**Our mitigation**: Threshold-based killing + NODE_OPTIONS heap cap
 
-## Residual Gaps
+### Process Orphaning (Root Cause: macOS lacks PR_SET_PDEATHSIG)
+These we can fully mitigate:
+- #33947, #20369, #24649, #19045, #1935, #18405, #35673
 
-`cc-reaper` does **not** currently:
+**Our mitigation**: PGID cleanup + LaunchAgent monitoring
 
-- share MCP servers across concurrent Claude sessions
-- disable Claude's remote MCP sync / feature-flag traffic
-- fix IDE / VS Code extension memory bugs
-- repair Claude Code's internal updater, streaming, or renderer implementations
-- automatically rotate or archive `~/.claude/projects/*.jsonl` histories
+### V8 Heap Issues (Root Cause: Missing NODE_OPTIONS)
+Require user action:
+- #27788, #18011, #30131
 
-Those are upstream product/runtime fixes. `cc-reaper` can only contain them from the outside by killing unhealthy sessions and cleaning leaked process/artifact state.
+**Our mitigation**: Warning in `claude-health`, documentation
+
+### Windows-Specific (Platform limitations)
+Cannot fully mitigate without upstream fixes:
+- #32692, #33588, #33415, #29413, #32183, #33626
+
+**Our mitigation**: Detection tools, environment variable workarounds
