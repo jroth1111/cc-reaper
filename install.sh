@@ -27,7 +27,9 @@ echo "[1/5] Installing shell functions..."
 
 mkdir -p "$REAPER_DIR/logs"
 cp "$SCRIPT_DIR/shell/claude-cleanup.sh" "$REAPER_DIR/claude-cleanup.sh"
+cp "$SCRIPT_DIR/shell/claude-cleanup-runtime.bash" "$REAPER_DIR/claude-cleanup-runtime.bash"
 chmod 644 "$REAPER_DIR/claude-cleanup.sh"
+chmod 644 "$REAPER_DIR/claude-cleanup-runtime.bash"
 
 SHELL_SOURCE="source \"$REAPER_DIR/claude-cleanup.sh\""
 

@@ -4,7 +4,7 @@
 
 LOG_DIR="$HOME/.cc-reaper/logs"
 LOG_FILE="$LOG_DIR/guard-monitor.log"
-HELPERS_FILE="$HOME/.cc-reaper/claude-cleanup.sh"
+HELPERS_FILE="$HOME/.cc-reaper/claude-cleanup-runtime.bash"
 mkdir -p "$LOG_DIR"
 
 # Rotate log if > 1MB

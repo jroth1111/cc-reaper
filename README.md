@@ -65,7 +65,7 @@ git pull
 ./install.sh
 ```
 
-The installer copies runtime helpers to `~/.cc-reaper/`, refreshes the stop hook, and installs the LaunchAgent suite when that option is selected. For proc-janitor users, manually sync the config:
+The installer copies the sourced shell wrapper and its bash runtime to `~/.cc-reaper/`, refreshes the stop hook, and installs the LaunchAgent suite when that option is selected. For proc-janitor users, manually sync the config:
 
 ```bash
 cp proc-janitor/config.toml ~/.config/proc-janitor/config.toml
@@ -263,7 +263,8 @@ cc-reaper/
 ├── proc-janitor/
 │   └── config.toml                 # proc-janitor daemon config (alternative to LaunchAgent)
 ├── shell/
-│   └── claude-cleanup.sh           # Shell functions (cleanup, sessions, guard, disk)
+│   ├── claude-cleanup.sh           # Shell wrapper to source from bash/zsh
+│   └── claude-cleanup-runtime.bash # Bash runtime implementation
 └── README.md
 ```
 
