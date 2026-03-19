@@ -41,12 +41,12 @@ Generated from `gh issue list --repo anthropics/claude-code` analysis of 200+ is
 
 | Issue | Title | Platform | Mitigation | Coverage |
 |-------|-------|----------|------------|----------|
-| #33947 | MCP server/subagent orphan accumulation | macOS | Stop hook + LaunchAgent orphan-monitor | ✅ FULL |
-| #20369 | Orphaned subagent 30GB memory leak | macOS | PGID cleanup kills entire process group | ✅ FULL |
+| #33947 | MCP server/subagent orphan accumulation | macOS | Stop hook + LaunchAgent orphan-monitor + descendant ledger | ✅ FULL |
+| #20369 | Orphaned subagent 30GB memory leak | macOS | PGID cleanup kills entire process group; escaped descendants require ledger proof | ✅ FULL |
 | #28046 | Caffeinate leak — thousands spawned | macOS | TTY-matched cleanup in stop hook | ✅ FULL |
 | #24649 | MCP processes not cleaned on exit | macOS | Stop hook runs on session end | ✅ FULL |
 | #19045 | Subagent processes not terminated | Linux | PGID cleanup works on Linux | ✅ FULL |
-| #1935 | MCP servers not terminated on exit | macOS | Stop hook + pattern fallback | ✅ FULL |
+| #1935 | MCP servers not terminated on exit | macOS | Stop hook + ledger-based orphan fallback | ✅ FULL |
 | #18405 | Orphaned processes crashing computer | All | LaunchAgent monitors every 10 min | ✅ FULL |
 | #35673 | MCP subprocesses not cleaned on terminal close | macOS | LaunchAgent catches terminal close | ✅ FULL |
 | #34092 | statusLine zombie accumulation | macOS | `claude-check-zombies` detection | 🔍 DETECT |
@@ -57,11 +57,11 @@ Generated from `gh issue list --repo anthropics/claude-code` analysis of 200+ is
 
 | Issue | Title | Size | Mitigation | Coverage |
 |-------|-------|------|------------|----------|
-| #26911 | Task .output files | 537 GB | LaunchAgent disk-monitor (threshold/age) | ✅ FULL |
-| #34783 | Self-referential disk loop | 696 GB | Disk monitor prevents accumulation | ✅ FULL |
+| #26911 | Task .output files | 537 GB | Inspect-only disk monitor + manual temp purge | ⚠️ PARTIAL |
+| #34783 | Self-referential disk loop | 696 GB | Inspect-only disk monitor + manual temp purge | ⚠️ PARTIAL |
 | #24207 | ~/.claude grows unbounded | Variable | `claude-disk` monitoring | 🔍 DETECT |
-| #28126 | ~/.claude/tasks/ directories leak | Variable | Disk monitor cleans old files | ✅ FULL |
-| #8856 | /tmp/claude-*-cwd tracking files | Variable | Included in disk cleanup | ✅ FULL |
+| #28126 | ~/.claude/tasks/ directories leak | Variable | Preserved by design; inspect-only visibility | 🔍 DETECT |
+| #8856 | /tmp/claude-*-cwd tracking files | Variable | Manual temp purge | ⚠️ PARTIAL |
 
 ## V8 HEAP/OOM — Mitigation Status
 
@@ -93,10 +93,10 @@ Generated from `gh issue list --repo anthropics/claude-code` analysis of 200+ is
 | Critical Memory (>8GB) | 7 | 0 | 7 | 0 | 0 |
 | ArrayBuffer Leaks | 11 | 0 | 11 | 0 | 0 |
 | Process/Orphan Leaks | 11 | 8 | 0 | 1 | 2 |
-| Disk Leaks | 5 | 4 | 0 | 1 | 0 |
+| Disk Leaks | 5 | 0 | 3 | 2 | 0 |
 | V8 Heap/OOM | 5 | 0 | 4 | 1 | 0 |
 | Windows-Specific | 8 | 0 | 0 | 1 | 7 |
-| **TOTAL** | **47** | **12** | **22** | **4** | **9** |
+| **TOTAL** | **47** | **8** | **25** | **5** | **9** |
 
 ## MITIGATION TOOLS
 
@@ -105,10 +105,10 @@ Generated from `gh issue list --repo anthropics/claude-code` analysis of 200+ is
 | `claude-health` | Comprehensive health check | All issues |
 | `claude-check-growthbook` | Detect GrowthBook leak (#32692) | Windows GrowthBook |
 | `claude-check-zombies` | Detect statusLine zombies (#34092) | statusLine bug |
-| `claude-guard` | Auto-kill bloated sessions | All memory leaks |
-| `claude-cleanup` | Kill orphan processes | All process leaks |
+| `claude-guard` | Alert-first live-session guard; auto-kill only for explicitly enabled conditions | All memory leaks |
+| `claude-cleanup` | Kill orphan PGIDs and ledger-proven orphan descendants | All process leaks |
 | `claude-disk` | Check disk usage | All disk leaks |
-| `claude-clean-disk` | Clean temp files | #26911, #34783 |
+| `claude-clean-disk` | Manual temp purge when no sessions are active | #26911, #34783 |
 | `claude-ram` | Memory monitoring | All memory issues |
 | `claude-sessions` | Session listing | #33979 |
 
@@ -116,18 +116,18 @@ Generated from `gh issue list --repo anthropics/claude-code` analysis of 200+ is
 
 | Component | Frequency | Purpose | Issues |
 |-----------|-----------|---------|--------|
-| Stop Hook | Session end | Kill PGID group | Process leaks |
-| orphan-monitor | Every 10 min | Kill PPID=1 processes | Orphan processes |
-| disk-monitor | Every 1 hour | Clean temp files | Disk leaks |
-| guard-monitor | Every 5 min | Kill bloated sessions | Memory leaks |
+| Stop Hook | Session end | Record descendant ledger, then kill PGID group | Process leaks |
+| orphan-monitor | Every 10 min | Kill PPID=1 processes only when tied to a recorded Claude session | Orphan processes |
+| disk-monitor | Every 1 hour | Inspect temp/tasks/logs without deleting preserved artifacts | Disk leaks |
+| guard-monitor | Every 2 min | Run safe-default `claude-guard` | Memory leaks |
 
 ## RECOMMENDED USER SETUP
 
 ```bash
 # Add to ~/.zshrc or ~/.bashrc
 export NODE_OPTIONS="--max-old-space-size=8192"  # Mitigate #27788
-export CC_MAX_RSS_MB=4096                         # Kill at 4GB
-export CC_GUARD_MODE=strict                       # Auto-kill bloated
+export CC_MAX_RSS_MB=4096                         # Alert at 4GB
+export CC_GUARD_KILL_BLOATED=1                    # Optional: auto-kill bloated live sessions
 source ~/.cc-reaper/shell/claude-cleanup.sh
 
 # Windows-specific (if applicable)

@@ -20,25 +20,25 @@ This is a [widely reported issue](https://github.com/anthropics/claude-code/issu
 
 ## Solution: Five-Layer Defense
 
-All layers use **PGID-based process group cleanup** as the primary method — killing entire process groups spawned by a Claude session with a single `kill -- -$PGID`. Pattern-based detection is kept as a fallback for edge cases.
+All layers use **PGID-based process group cleanup** as the primary method — killing entire process groups spawned by a Claude session with a single `kill -- -$PGID`. For escaped processes, `cc-reaper` now uses a persisted descendant ledger rather than global MCP-looking regexes as proof.
 
 ```
 Session ends normally
-  └── Stop hook — kills session's process group via PGID (catches all children)
+  └── Stop hook — records the session's descendant ledger, then kills the session PGID
 
 Session leaks while still running
   └── claude-guard — alert-first for bloated/idle/descendant-heavy sessions, auto-reaps only explicitly enabled conditions
   └── LaunchAgent guard monitor — runs claude-guard every 2 minutes on macOS
 
 Session crashes / terminal force-closed
-  └── proc-janitor daemon — scans every 30s, kills orphans after 60s grace
-  └── OR: LaunchAgent orphan monitor — zero-dependency macOS native, PGID group kill + PPID=1 fallback
+  └── proc-janitor daemon — scans every 30s, kills regex-matched orphans after 60s grace
+  └── OR: LaunchAgent orphan monitor — zero-dependency macOS native, PGID group kill + ledger-based PPID=1 fallback
 
 Disk and startup hygiene
   └── disk monitor — inspect-only visibility for temp growth, Claude tasks, and full session logs
 
 Manual intervention needed
-  └── claude-cleanup — finds orphaned PGIDs (leader has PPID=1), kills entire groups
+  └── claude-cleanup — finds orphaned PGIDs (leader has PPID=1) and ledger-proven orphan descendants
   └── claude-sessions / claude-ram — inspect per-session memory, descendants, zombies, and orphan visibility
   └── claude-disk — inspect temp growth and oversized ~/.claude/projects/*.jsonl files
 ```
@@ -47,7 +47,7 @@ Manual intervention needed
 
 Claude Code sessions are process group leaders (PGID = session PID). All spawned MCP servers, subagents, and their children inherit this PGID. This means one `kill -- -$PGID` reliably cleans up everything — including third-party MCP servers that pattern matching might miss.
 
-**Safety**: PGID cleanup only targets groups whose **leader** is a Claude CLI session (`claude.*stream-json`). It never matches by group membership — other apps like Chrome and Cursor have `claude` subprocesses in their process groups, so matching by membership would kill them.
+**Safety**: PGID cleanup only targets groups whose **leader** is a Claude CLI session (`claude.*stream-json`). The fallback path no longer kills global regex matches. It only kills PPID=`1` processes that were previously recorded as descendants of a real Claude session. Other apps like Chrome and Cursor may have `claude` subprocesses, so proof by session ancestry matters.
 
 ## Quick Start
 
@@ -139,7 +139,7 @@ Add to `~/.claude/settings.json` in the `"Stop"` hooks array:
 
 #### Option A: LaunchAgent suite (zero-dependency, macOS only)
 
-Native macOS approach — no Homebrew or Rust required. Installs three agents:
+Native macOS approach — no Homebrew or Rust required. Installs three agents and is the strongest safety path because it uses the descendant ledger:
 
 - orphan monitor — every 10 minutes, PPID=1 + PGID cleanup
 - guard monitor — every 2 minutes, runs `claude-guard`
@@ -177,6 +177,8 @@ launchctl unload ~/Library/LaunchAgents/com.cc-reaper.disk-monitor.plist
 #### Option B: proc-janitor (feature-rich)
 
 Rust-based daemon with grace period, whitelist, and detailed logging. Requires Homebrew or Cargo.
+
+This path is less precise than the LaunchAgent suite because `proc-janitor` cannot consult the descendant ledger and still relies on orphan regexes.
 
 ```bash
 # Install
