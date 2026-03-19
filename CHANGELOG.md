@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0] - 2026-03-19
+
+### Added
+- **LaunchAgent guard monitor** — New `launchd/cc-reaper-guard-monitor.sh` plus `com.cc-reaper.guard-monitor.plist` run `claude-guard` every 2 minutes on macOS, so live-session leaks are mitigated without manual intervention.
+- **Issue coverage ledger** — Added `ISSUE_COVERAGE.md`, mapping upstream `anthropics/claude-code` leak clusters to current `cc-reaper` mitigations and residual gaps.
+- **Disk/session visibility commands** — `claude-disk` and `claude-clean-disk` are now part of the canonical shell helper surface and documented in the install flow.
+
+### Changed
+- **Canonical runtime helper path** — Installer now copies the shell helper to `~/.cc-reaper/claude-cleanup.sh` and updates shell startup files to source the installed runtime copy instead of a repo-relative path.
+- **LaunchAgent option now installs the full suite** — Orphan monitor, guard monitor, and disk monitor are installed together when the LaunchAgent path is chosen.
+- **`claude-guard` now detects more than RSS spikes** — It can reap sessions for runaway descendant counts and zombie explosions, not just oversized memory.
+- **macOS guard prefers `footprint` over RSS** when it reports a larger value, which better captures IOAccelerator / WebKit allocator leaks in long-lived sessions.
+
+### Fixed
+- **Shell helper divergence** — The repo had drifted between multiple helper copies. The canonical helper now includes cleanup, guard, session inspection, and disk-inspection commands in one place.
+- **Fallback orphan matching missed common MCP shapes** — Pattern fallback now covers Docker, Python, `uv`/`uvx`, and generic Node MCP launch styles instead of mainly `npx`/`npm exec`.
+- **zsh-sourced helper noise** — Guard and session commands now force local shell semantics under zsh so helper internals do not leak into command output.
+
 ## [0.5.1] - 2026-03-12
 
 ### Fixed

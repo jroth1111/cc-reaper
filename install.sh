@@ -3,6 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="$HOME"
+REAPER_DIR="$HOME_DIR/.cc-reaper"
 
 # ─── Detect install vs update ────────────────────────────────────────────────
 IS_UPDATE=false
@@ -22,9 +23,13 @@ echo ""
 
 # ─── 1. Shell functions ─────────────────────────────────────────────────────
 
-echo "[1/4] Installing shell functions..."
+echo "[1/5] Installing shell functions..."
 
-SHELL_SOURCE="source \"$SCRIPT_DIR/shell/claude-cleanup.sh\""
+mkdir -p "$REAPER_DIR/logs"
+cp "$SCRIPT_DIR/shell/claude-cleanup.sh" "$REAPER_DIR/claude-cleanup.sh"
+chmod 644 "$REAPER_DIR/claude-cleanup.sh"
+
+SHELL_SOURCE="source \"$REAPER_DIR/claude-cleanup.sh\""
 
 # Detect shell config file
 if [ -n "$ZSH_VERSION" ] || [ -f "$HOME_DIR/.zshrc" ]; then
@@ -36,20 +41,41 @@ else
 fi
 
 if grep -q "claude-cleanup.sh" "$SHELL_RC" 2>/dev/null; then
-  echo "  Already in $SHELL_RC, skipping."
+  TMP_RC=$(mktemp)
+  awk -v repl="$SHELL_SOURCE" '
+    BEGIN { replaced = 0 }
+    /claude-cleanup\.sh/ {
+      if (!replaced) {
+        print repl
+        replaced = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!replaced) {
+        print ""
+        print "# Claude Code cleanup functions"
+        print repl
+      }
+    }
+  ' "$SHELL_RC" > "$TMP_RC"
+  mv "$TMP_RC" "$SHELL_RC"
+  echo "  Updated $SHELL_RC to source $REAPER_DIR/claude-cleanup.sh"
 else
   echo "" >> "$SHELL_RC"
   echo "# Claude Code cleanup functions" >> "$SHELL_RC"
   echo "$SHELL_SOURCE" >> "$SHELL_RC"
   echo "  Added to $SHELL_RC"
 fi
+echo "  Runtime helpers synced to $REAPER_DIR/"
 
 # ─── 2. Stop hook ───────────────────────────────────────────────────────────
 
 if $IS_UPDATE; then
-  echo "[2/4] Updating Claude Code Stop hook..."
+  echo "[2/5] Updating Claude Code Stop hook..."
 else
-  echo "[2/4] Installing Claude Code Stop hook..."
+  echo "[2/5] Installing Claude Code Stop hook..."
 fi
 
 HOOKS_DIR="$HOME_DIR/.claude/hooks"
@@ -84,11 +110,11 @@ else
   echo "[3/5] Setting up background daemon..."
 fi
 echo ""
-echo "  Choose a daemon for continuous orphan cleanup:"
+  echo "  Choose a daemon for continuous orphan cleanup:"
 echo "    a) proc-janitor  — Feature-rich Rust daemon (grace period, whitelist, logging)"
 echo "                       Requires: Homebrew or Cargo"
-echo "    b) LaunchAgent   — Zero-dependency macOS native (10-min interval, PPID=1 detection)"
-echo "                       Requires: nothing (built-in macOS)"
+echo "    b) LaunchAgent   — Zero-dependency macOS native suite"
+echo "                       Includes: orphan monitor (10 min), session guard (2 min), disk monitor (1 hr)"
 echo ""
 printf "  Your choice [a/b] (default: b): "
 read -r DAEMON_CHOICE
@@ -151,30 +177,28 @@ if [ "$DAEMON_CHOICE" = "a" ]; then
 
 else
   # ─── LaunchAgent path ───
-  echo "  Setting up LaunchAgent (zero-dependency)..."
+  echo "  Setting up LaunchAgent suite (zero-dependency)..."
 
-  REAPER_DIR="$HOME_DIR/.cc-reaper"
-  mkdir -p "$REAPER_DIR/logs"
-
-  # Copy monitor script
   cp "$SCRIPT_DIR/launchd/cc-reaper-monitor.sh" "$REAPER_DIR/"
+  cp "$SCRIPT_DIR/launchd/cc-reaper-guard-monitor.sh" "$REAPER_DIR/"
+  cp "$SCRIPT_DIR/launchd/cc-reaper-disk-monitor.sh" "$REAPER_DIR/"
   chmod +x "$REAPER_DIR/cc-reaper-monitor.sh"
+  chmod +x "$REAPER_DIR/cc-reaper-guard-monitor.sh"
+  chmod +x "$REAPER_DIR/cc-reaper-disk-monitor.sh"
 
-  # Install plist with actual home path
   PLIST_DIR="$HOME_DIR/Library/LaunchAgents"
   mkdir -p "$PLIST_DIR"
-  PLIST_FILE="$PLIST_DIR/com.cc-reaper.orphan-monitor.plist"
+  for label in orphan guard disk; do
+    PLIST_FILE="$PLIST_DIR/com.cc-reaper.${label}-monitor.plist"
+    sed "s|__HOME__|$HOME_DIR|g" "$SCRIPT_DIR/launchd/com.cc-reaper.${label}-monitor.plist" > "$PLIST_FILE"
+    launchctl unload "$PLIST_FILE" 2>/dev/null || true
+    launchctl load "$PLIST_FILE"
+  done
 
-  sed "s|__HOME__|$HOME_DIR|g" "$SCRIPT_DIR/launchd/com.cc-reaper.orphan-monitor.plist" > "$PLIST_FILE"
+  echo "  LaunchAgent suite installed and started."
+  echo "  Logs are written to $REAPER_DIR/logs/"
 
-  # Load the LaunchAgent
-  launchctl unload "$PLIST_FILE" 2>/dev/null || true
-  launchctl load "$PLIST_FILE"
-
-  echo "  LaunchAgent installed and started."
-  echo "  Monitor runs every 10 minutes, logs at $REAPER_DIR/logs/"
-
-  echo "[4/5] LaunchAgent active — skipping proc-janitor."
+  echo "[4/5] LaunchAgent suite active — skipping proc-janitor."
 fi
 
 # ─── 5. Uninstall hint ────────────────────────────────────────────────────────
@@ -192,6 +216,9 @@ echo "Available commands (restart terminal or 'source $SHELL_RC'):"
 echo "  claude-ram          Show Claude Code RAM/CPU usage breakdown"
 echo "  claude-cleanup      Immediately kill orphan processes"
 echo "  claude-sessions     List active sessions with idle detection"
+echo "  claude-guard        Reap bloated/runaway sessions"
+echo "  claude-disk         Inspect Claude disk usage and session logs"
+echo "  claude-clean-disk   Clean Claude temp files"
 if [ "$DAEMON_CHOICE" = "a" ]; then
 echo "  proc-janitor scan   Show detected orphans (dry run)"
 echo "  proc-janitor clean  Kill detected orphans"
@@ -201,5 +228,9 @@ echo ""
 echo "LaunchAgent commands:"
 echo "  launchctl list | grep cc-reaper   Check if monitor is running"
 echo "  cat ~/.cc-reaper/logs/monitor.log View cleanup log"
-echo "  launchctl unload ~/Library/LaunchAgents/com.cc-reaper.orphan-monitor.plist  Stop"
+echo "  cat ~/.cc-reaper/logs/guard-monitor.log View session guard log"
+echo "  cat ~/.cc-reaper/logs/disk-monitor.log  View disk cleanup log"
+echo "  launchctl unload ~/Library/LaunchAgents/com.cc-reaper.orphan-monitor.plist"
+echo "  launchctl unload ~/Library/LaunchAgents/com.cc-reaper.guard-monitor.plist"
+echo "  launchctl unload ~/Library/LaunchAgents/com.cc-reaper.disk-monitor.plist"
 fi
