@@ -40,6 +40,18 @@
  <string>512</string>
  <key>CC_GUARD_MIN_GROWTH_MEM_MB</key>
  <string>1024</string>
+ <key>CC_GUARD_MIN_KILL_AGE_SECONDS</key>
+ <string>300</string>
+ <key>CC_GUARD_CONFIRM_ZOMBIES</key>
+ <string>2</string>
+ <key>CC_GUARD_CONFIRM_DESCENDANTS</key>
+ <string>4</string>
+ <key>CC_GUARD_CONFIRM_GROWTH</key>
+ <string>2</string>
+ <key>CC_GUARD_CONFIRM_BLOATED_IDLE</key>
+ <string>3</string>
+ <key>CC_GUARD_CONFIRM_BLOATED_ACTIVE</key>
+ <string>8</string>
  <key>CC_USE_FOOTPRINT</key>
  <string>1</string>
  <key>CC_GUARD_NOTIFY</key>
@@ -47,7 +59,7 @@
  <key>CC_GUARD_KILL_BLOATED</key>
  <string>1</string>
  <key>CC_GUARD_KILL_DESCENDANTS</key>
- <string>1</string>
+ <string>0</string>
  <key>CC_GUARD_KILL_GROWTH</key>
  <string>1</string>
  </dict>

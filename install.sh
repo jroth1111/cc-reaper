@@ -118,7 +118,7 @@ echo ""
 echo "    a) proc-janitor  — Feature-rich Rust daemon (regex-based orphan cleanup, less precise)"
 echo "                       Requires: Homebrew or Cargo"
 echo "    b) LaunchAgent   — Zero-dependency macOS native suite (recommended)"
-echo "                       Includes: orphan monitor (10 min), session guard (2 min), disk inspector (1 hr)"
+echo "                       Includes: orphan monitor (10 min), conservative session guard (30 sec), disk inspector (1 hr)"
 echo ""
 printf "  Your choice [a/b] (default: b): "
 read -r DAEMON_CHOICE

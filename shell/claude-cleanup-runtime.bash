@@ -17,10 +17,62 @@ _claude_subagent_pattern() {
   echo "claude.*stream-json|claude.*--session-id"
 }
 
+_claude_session_pattern() {
+  echo '(^|[[:space:]/])claude([[:space:]]|$)'
+}
+
+_claude_caffeinate_pattern() {
+  echo '(^|[[:space:]/])caffeinate([[:space:]]|$)'
+}
+
 _claude_is_whitelisted_mcp_cmd() {
   local cmd=$1
   [ -z "$cmd" ] && return 1
   echo "$cmd" | grep -qE "$(_claude_mcp_whitelist_regex)"
+}
+
+_claude_is_session_cmd() {
+  local cmd=$1
+  [ -z "$cmd" ] && return 1
+  echo "$cmd" | grep -qE "$(_claude_session_pattern)" || return 1
+  echo "$cmd" | grep -qE 'stream-json|worker-service|claude-cleanup\.sh|stop-cleanup-orphans\.sh|cc-reaper|mcp-server' && return 1
+  return 0
+}
+
+_claude_is_managed_cmd() {
+  local cmd=$1
+  [ -z "$cmd" ] && return 1
+  _claude_is_whitelisted_mcp_cmd "$cmd" && return 1
+
+  if _claude_is_session_cmd "$cmd"; then
+    return 0
+  fi
+
+  echo "$cmd" | grep -qE "$(_claude_subagent_pattern)|$(_claude_orphan_mcp_pattern)|$(_claude_caffeinate_pattern)"
+}
+
+_claude_group_reap_pids() {
+  local target_pid=$1
+  shift
+  local pgid
+  pgid=$(ps -o pgid= -p "$target_pid" 2>/dev/null | tr -d ' ')
+  [ -n "$pgid" ] && [ "$pgid" != "0" ] || return 0
+
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+
+    local skip=false
+    local protected_pid
+    for protected_pid in "$@"; do
+      [ -n "$protected_pid" ] && [ "$pid" = "$protected_pid" ] && skip=true && break
+    done
+    $skip && continue
+
+    local pid_cmd
+    pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+    _claude_is_managed_cmd "$pid_cmd" || continue
+    echo "$pid"
+  done < <(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {print $1}')
 }
 
 _claude_session_pids() {
@@ -131,6 +183,44 @@ _claude_session_memory_mb() {
   echo "$total_mb"
 }
 
+_claude_guard_memory_mb() {
+  local pid=$1
+  [ -z "$pid" ] && { echo 0; return; }
+
+  local total_mb
+  total_mb=$(_claude_process_memory_mb "$pid")
+
+  while IFS= read -r child; do
+    [ -z "$child" ] && continue
+    local child_cmd child_mb
+    child_cmd=$(ps -o command= -p "$child" 2>/dev/null)
+    _claude_is_managed_cmd "$child_cmd" || continue
+    if echo "$child_cmd" | grep -qE "$(_claude_session_pattern)|$(_claude_subagent_pattern)"; then
+      child_mb=$(_claude_process_memory_mb "$child")
+    else
+      child_mb=$(_claude_process_rss_mb "$child")
+    fi
+    total_mb=$((total_mb + child_mb))
+  done < <(_claude_descendants "$pid")
+
+  echo "$total_mb"
+}
+
+_claude_guard_descendant_count() {
+  local pid=$1
+  local count=0
+
+  while IFS= read -r child; do
+    [ -z "$child" ] && continue
+    local child_cmd
+    child_cmd=$(ps -o command= -p "$child" 2>/dev/null)
+    _claude_is_managed_cmd "$child_cmd" || continue
+    count=$((count + 1))
+  done < <(_claude_descendants "$pid")
+
+  echo "$count"
+}
+
 _claude_descendant_count() {
   local pid=$1
   local count=0
@@ -194,12 +284,18 @@ _claude_guard_write_sample() {
   local desc_count=$4
   local zombie_count=$5
   local age_secs=$6
+  local mem_hits=$7
+  local desc_hits=$8
+  local zombie_hits=$9
+  local growth_hits=${10}
   local file tmp_file
 
   _claude_guard_init_samples
   file=$(_claude_guard_sample_file "$pid")
   tmp_file=$(mktemp "$(_claude_guard_sample_dir)/session-${pid}.XXXXXX") || return 1
-  printf '%s\t%s\t%s\t%s\t%s\n' "$timestamp" "$mem_mb" "$desc_count" "$zombie_count" "$age_secs" > "$tmp_file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$timestamp" "$mem_mb" "$desc_count" "$zombie_count" "$age_secs" \
+    "${mem_hits:-0}" "${desc_hits:-0}" "${zombie_hits:-0}" "${growth_hits:-0}" > "$tmp_file"
   mv "$tmp_file" "$file"
 }
 
@@ -253,22 +349,18 @@ _claude_pgid_kill() {
   if [ -n "$pgid" ] && [ "$pgid" != "0" ]; then
     while IFS= read -r pid; do
       [ -z "$pid" ] && continue
-      local pid_cmd
-      pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
-      _claude_is_whitelisted_mcp_cmd "$pid_cmd" && continue
       kill "$pid" 2>/dev/null
-    done < <(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {print $1}')
+    done < <(_claude_group_reap_pids "$target_pid")
 
     sleep 2
     while IFS= read -r pid; do
       [ -z "$pid" ] && continue
-      local pid_cmd
-      pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
-      _claude_is_whitelisted_mcp_cmd "$pid_cmd" && continue
       kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
-    done < <(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {print $1}')
+    done < <(_claude_group_reap_pids "$target_pid")
   else
-    kill "$target_pid" 2>/dev/null
+    local target_cmd
+    target_cmd=$(ps -o command= -p "$target_pid" 2>/dev/null)
+    _claude_is_managed_cmd "$target_cmd" && kill "$target_pid" 2>/dev/null
   fi
 }
 
@@ -289,28 +381,22 @@ claude-cleanup() {
       continue
     fi
 
-    local match_count group_pids group_size
-    match_count=$(ps -eo pgid,command 2>/dev/null | awk -v pgid="$pgid" '$1 == pgid' | grep -cE "claude|mcp|worker-service|docker run .*mcp/" 2>/dev/null || true)
-    if [ "$match_count" -gt 0 ]; then
-      group_size=0
-      while IFS= read -r pid; do
-        [ -z "$pid" ] && continue
-        local pid_cmd
-        pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
-        _claude_is_whitelisted_mcp_cmd "$pid_cmd" && continue
-        group_size=$((group_size + 1))
-      done < <(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {print $1}')
-      [ "$group_size" -eq 0 ] && continue
-      echo "  Killing orphaned process group PGID=$pgid ($group_size processes)"
-      _claude_pgid_kill "$pgid"
-      pgid_kills=$((pgid_kills + group_size))
-    fi
+    local group_size
+    group_size=0
+    while IFS= read -r pid; do
+      [ -z "$pid" ] && continue
+      group_size=$((group_size + 1))
+    done < <(_claude_group_reap_pids "$pgid")
+    [ "$group_size" -eq 0 ] && continue
+    echo "  Killing orphaned process group PGID=$pgid ($group_size processes)"
+    _claude_pgid_kill "$pgid"
+    pgid_kills=$((pgid_kills + group_size))
   done
 
   local fallback_candidates=0
   while IFS=$'\t' read -r pid _pgid cmd; do
     [ -z "$pid" ] && continue
-    _claude_is_whitelisted_mcp_cmd "$cmd" && continue
+    _claude_is_managed_cmd "$cmd" || continue
     fallback_candidates=$((fallback_candidates + 1))
   done < <(ccr_known_orphan_pids)
 
@@ -324,7 +410,7 @@ claude-cleanup() {
 
   while IFS=$'\t' read -r pid _pgid cmd; do
     [ -z "$pid" ] && continue
-    _claude_is_whitelisted_mcp_cmd "$cmd" && continue
+    _claude_is_managed_cmd "$cmd" || continue
     kill "$pid" 2>/dev/null
   done < <(ccr_known_orphan_pids)
 
@@ -332,7 +418,7 @@ claude-cleanup() {
   local remaining=0
   while IFS=$'\t' read -r pid _pgid cmd; do
     [ -z "$pid" ] && continue
-    _claude_is_whitelisted_mcp_cmd "$cmd" && continue
+    _claude_is_managed_cmd "$cmd" || continue
     remaining=$((remaining + 1))
   done < <(ccr_known_orphan_pids)
 
@@ -465,6 +551,12 @@ claude-guard() {
   local max_zombies=${CC_MAX_ZOMBIES:-16}
   local max_growth_mb_per_min=${CC_MAX_GROWTH_MB_PER_MIN:-512}
   local min_growth_mem_mb=${CC_GUARD_MIN_GROWTH_MEM_MB:-1024}
+  local min_kill_age_secs=${CC_GUARD_MIN_KILL_AGE_SECONDS:-180}
+  local confirm_zombies=${CC_GUARD_CONFIRM_ZOMBIES:-2}
+  local confirm_descendants=${CC_GUARD_CONFIRM_DESCENDANTS:-4}
+  local confirm_growth=${CC_GUARD_CONFIRM_GROWTH:-2}
+  local confirm_bloated_idle=${CC_GUARD_CONFIRM_BLOATED_IDLE:-2}
+  local confirm_bloated_active=${CC_GUARD_CONFIRM_BLOATED_ACTIVE:-6}
   local kill_bloated=${CC_GUARD_KILL_BLOATED:-0}
   local kill_idle=${CC_GUARD_KILL_IDLE:-0}
   local kill_descendants=${CC_GUARD_KILL_DESCENDANTS:-0}
@@ -493,11 +585,35 @@ claude-guard() {
     _say "WARNING: CC_GUARD_MIN_GROWTH_MEM_MB='$min_growth_mem_mb' is not numeric, using default 1024"
     min_growth_mem_mb=1024
   fi
+  if ! echo "$min_kill_age_secs" | grep -qE '^[0-9]+$'; then
+    _say "WARNING: CC_GUARD_MIN_KILL_AGE_SECONDS='$min_kill_age_secs' is not numeric, using default 180"
+    min_kill_age_secs=180
+  fi
+  if ! echo "$confirm_zombies" | grep -qE '^[0-9]+$'; then
+    _say "WARNING: CC_GUARD_CONFIRM_ZOMBIES='$confirm_zombies' is not numeric, using default 2"
+    confirm_zombies=2
+  fi
+  if ! echo "$confirm_descendants" | grep -qE '^[0-9]+$'; then
+    _say "WARNING: CC_GUARD_CONFIRM_DESCENDANTS='$confirm_descendants' is not numeric, using default 4"
+    confirm_descendants=4
+  fi
+  if ! echo "$confirm_growth" | grep -qE '^[0-9]+$'; then
+    _say "WARNING: CC_GUARD_CONFIRM_GROWTH='$confirm_growth' is not numeric, using default 2"
+    confirm_growth=2
+  fi
+  if ! echo "$confirm_bloated_idle" | grep -qE '^[0-9]+$'; then
+    _say "WARNING: CC_GUARD_CONFIRM_BLOATED_IDLE='$confirm_bloated_idle' is not numeric, using default 2"
+    confirm_bloated_idle=2
+  fi
+  if ! echo "$confirm_bloated_active" | grep -qE '^[0-9]+$'; then
+    _say "WARNING: CC_GUARD_CONFIRM_BLOATED_ACTIVE='$confirm_bloated_active' is not numeric, using default 6"
+    confirm_bloated_active=6
+  fi
 
   _claude_guard_prune_samples
 
   _say "=== Claude Guard ==="
-  _say "  Config: max_sessions=$max_sessions, idle_threshold=${idle_threshold}%, max_mem=${max_rss_mb} MB, max_descendants=$max_descendants, max_zombies=$max_zombies, max_growth=${max_growth_mb_per_min} MB/min"
+  _say "  Config: max_sessions=$max_sessions, idle_threshold=${idle_threshold}%, max_mem=${max_rss_mb} MB, max_descendants=$max_descendants, max_zombies=$max_zombies, max_growth=${max_growth_mb_per_min} MB/min, min_kill_age=${min_kill_age_secs}s"
   _say "  Actions: kill_zombies=$kill_zombies, kill_descendants=$kill_descendants, kill_growth=$kill_growth, kill_bloated=$kill_bloated, kill_idle=$kill_idle"
   _say ""
 
@@ -525,22 +641,28 @@ claude-guard() {
 
   for pid in "${session_pids[@]}"; do
     local info cpu etime mem_mb desc_count zombie_count cpu_int session_status reason age_secs
-    local growth_rate prev_sample prev_ts prev_mem prev_desc prev_zombies prev_age elapsed_since_prev delta_mem
+    local growth_rate prev_sample prev_ts prev_mem prev_desc prev_zombies prev_age
+    local prev_mem_hits prev_desc_hits prev_zombie_hits prev_growth_hits elapsed_since_prev delta_mem
+    local mem_hits desc_hits zombie_hits growth_hits
     info=$(ps -p "$pid" -o %cpu=,etime= 2>/dev/null)
     [ -z "$info" ] && continue
 
     cpu=$(echo "$info" | awk '{print $1}')
     etime=$(echo "$info" | awk '{print $2}')
-    mem_mb=$(_claude_session_memory_mb "$pid")
-    desc_count=$(_claude_descendant_count "$pid")
+    mem_mb=$(_claude_guard_memory_mb "$pid")
+    desc_count=$(_claude_guard_descendant_count "$pid")
     zombie_count=$(_claude_zombie_count "$pid")
     cpu_int=$(echo "$cpu" | awk '{printf "%d", $1}')
     age_secs=$(_claude_etime_to_seconds "$etime")
     growth_rate=0
+    mem_hits=0
+    desc_hits=0
+    zombie_hits=0
+    growth_hits=0
 
     prev_sample=$(_claude_guard_read_sample "$pid" 2>/dev/null || true)
     if [ -n "$prev_sample" ]; then
-      IFS=$'\t' read -r prev_ts prev_mem prev_desc prev_zombies prev_age <<< "$prev_sample"
+      IFS=$'\t' read -r prev_ts prev_mem prev_desc prev_zombies prev_age prev_mem_hits prev_desc_hits prev_zombie_hits prev_growth_hits <<< "$prev_sample"
       if [ -n "${prev_ts:-}" ] && [ -n "${prev_mem:-}" ] && [ -n "${prev_age:-}" ] && \
          echo "$prev_ts" | grep -qE '^[0-9]+$' && echo "$prev_mem" | grep -qE '^[0-9]+$' && echo "$prev_age" | grep -qE '^[0-9]+$'; then
         elapsed_since_prev=$((now_ts - prev_ts))
@@ -549,6 +671,23 @@ claude-guard() {
           growth_rate=$((delta_mem * 60 / elapsed_since_prev))
         fi
       fi
+      echo "${prev_mem_hits:-0}" | grep -qE '^[0-9]+$' || prev_mem_hits=0
+      echo "${prev_desc_hits:-0}" | grep -qE '^[0-9]+$' || prev_desc_hits=0
+      echo "${prev_zombie_hits:-0}" | grep -qE '^[0-9]+$' || prev_zombie_hits=0
+      echo "${prev_growth_hits:-0}" | grep -qE '^[0-9]+$' || prev_growth_hits=0
+    fi
+
+    if [ "$mem_mb" -ge "$max_rss_mb" ]; then
+      mem_hits=$(( ${prev_mem_hits:-0} + 1 ))
+    fi
+    if [ "$desc_count" -ge "$max_descendants" ]; then
+      desc_hits=$(( ${prev_desc_hits:-0} + 1 ))
+    fi
+    if [ "$zombie_count" -ge "$max_zombies" ]; then
+      zombie_hits=$(( ${prev_zombie_hits:-0} + 1 ))
+    fi
+    if [ "$mem_mb" -ge "$min_growth_mem_mb" ] && [ "$growth_rate" -ge "$max_growth_mb_per_min" ]; then
+      growth_hits=$(( ${prev_growth_hits:-0} + 1 ))
     fi
 
     session_status="LIVE"
@@ -556,7 +695,7 @@ claude-guard() {
     if [ "$zombie_count" -ge "$max_zombies" ]; then
       session_status="[RUNAWAY]"
       reason="zombies"
-      if [ "$kill_zombies" = "1" ]; then
+      if [ "$kill_zombies" = "1" ] && [ "$zombie_hits" -ge "$confirm_zombies" ]; then
         forced_pids+=("$pid")
         forced_reason+=("$reason")
         forced_metric+=("$zombie_count")
@@ -567,7 +706,7 @@ claude-guard() {
     elif [ "$desc_count" -ge "$max_descendants" ]; then
       session_status="[RUNAWAY]"
       reason="descendants"
-      if [ "$kill_descendants" = "1" ]; then
+      if [ "$kill_descendants" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && [ "$desc_hits" -ge "$confirm_descendants" ] && { [ "$cpu_int" -lt "$idle_threshold" ] || [ "$mem_mb" -ge "$max_rss_mb" ]; }; then
         forced_pids+=("$pid")
         forced_reason+=("$reason")
         forced_metric+=("$desc_count")
@@ -578,7 +717,7 @@ claude-guard() {
     elif [ "$mem_mb" -ge "$min_growth_mem_mb" ] && [ "$growth_rate" -ge "$max_growth_mb_per_min" ]; then
       session_status="[LEAKING]"
       reason="growth"
-      if [ "$kill_growth" = "1" ]; then
+      if [ "$kill_growth" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && [ "$growth_hits" -ge "$confirm_growth" ]; then
         forced_pids+=("$pid")
         forced_reason+=("$reason")
         forced_metric+=("$growth_rate")
@@ -589,7 +728,9 @@ claude-guard() {
     elif [ "$mem_mb" -ge "$max_rss_mb" ]; then
       session_status="[BLOATED]"
       reason="memory"
-      if [ "$kill_bloated" = "1" ]; then
+      if [ "$kill_bloated" = "1" ] && [ "$age_secs" -ge "$min_kill_age_secs" ] && \
+         { { [ "$cpu_int" -lt "$idle_threshold" ] && [ "$mem_hits" -ge "$confirm_bloated_idle" ]; } || \
+           { [ "$cpu_int" -ge "$idle_threshold" ] && [ "$mem_hits" -ge "$confirm_bloated_active" ]; }; }; then
         forced_pids+=("$pid")
         forced_reason+=("$reason")
         forced_metric+=("$mem_mb")
@@ -605,7 +746,7 @@ claude-guard() {
     fi
 
     _say "$(printf '  %-7s %8s %6s %-10s %-6s %-6s %s' "$pid" "$mem_mb" "${cpu}%" "$etime" "$desc_count" "$zombie_count" "$session_status")"
-    _claude_guard_write_sample "$pid" "$now_ts" "$mem_mb" "$desc_count" "$zombie_count" "$age_secs" >/dev/null 2>&1 || true
+    _claude_guard_write_sample "$pid" "$now_ts" "$mem_mb" "$desc_count" "$zombie_count" "$age_secs" "$mem_hits" "$desc_hits" "$zombie_hits" "$growth_hits" >/dev/null 2>&1 || true
   done
 
   _say ""

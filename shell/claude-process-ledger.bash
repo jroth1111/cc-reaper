@@ -70,10 +70,11 @@ ccr_record_session_snapshot() {
 }
 
 ccr_live_session_pids() {
-  ps -eo pid,ppid,tty,command 2>/dev/null | awk '
+  ps -eo pid,ppid,pgid,tty,command 2>/dev/null | awk '
+    $1 == $3 &&
     $2 != 1 &&
-    $3 != "??" &&
-    $0 ~ /claude/ &&
+    $4 != "??" &&
+    $0 ~ /(^|[[:space:]\/])claude([[:space:]]|$)/ &&
     $0 !~ /stream-json/ &&
     $0 !~ /worker-service/ &&
     $0 !~ /claude-cleanup\.sh/ &&

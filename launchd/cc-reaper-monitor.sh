@@ -25,7 +25,6 @@ log() {
  echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"
 }
 
-MCP_WHITELIST="${CC_MCP_WHITELIST:-supabase|@stripe/mcp|context7|claude-mem|chroma-mcp}"
 ccr_refresh_active_session_snapshots
 
 # ─── PGID-based cleanup (primary) ────────────────────────────────────────────
@@ -56,7 +55,7 @@ kill_pids=()
 while IFS=$'\t' read -r pid pid_pgid cmd; do
  [ -n "$pid" ] || continue
 
- echo "$cmd" | grep -qE "$MCP_WHITELIST" && continue
+ _claude_is_managed_cmd "$cmd" || continue
 
  # Skip if already killed via PGID
  already_killed=false
@@ -82,13 +81,11 @@ if [ "$total_pgids" -eq 0 ] && [ "$total_pids" -eq 0 ]; then
 fi
 
 for pgid in "${killed_pgids[@]}"; do
- survivors=$(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {print $1}')
- for pid in $survivors; do
- pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
- _claude_is_whitelisted_mcp_cmd "$pid_cmd" && continue
+ while IFS= read -r pid; do
+ [ -n "$pid" ] || continue
  kill -9 "$pid" 2>/dev/null
  log "SIGKILL PID=$pid from group PGID=$pgid"
- done
+ done < <(_claude_group_reap_pids "$pgid")
 done
 
 for pid in "${kill_pids[@]}"; do
