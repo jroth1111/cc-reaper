@@ -1,6 +1,6 @@
 #!/bin/bash
-# cc-reaper disk monitor — cleans Claude Code temp files
-# Runs periodically via macOS LaunchAgent to prevent disk exhaustion
+# cc-reaper disk monitor — inspect Claude Code disk usage without deleting logs
+# Runs periodically via macOS LaunchAgent to surface temp growth and preserved logs.
 
 LOG_DIR="$HOME/.cc-reaper/logs"
 LOG_FILE="$LOG_DIR/disk-monitor.log"
@@ -32,40 +32,36 @@ TMP_GB=$((TMP_KB / 1048576))
 
 log "Temp directory: ${TMP_GB}GB (threshold: ${MAX_GB}GB)"
 
-# Clean old .output files first (regardless of size)
-OUTPUT_BEFORE=$(find "$CLAUDE_TMP" -name "*.output" -type f 2>/dev/null | wc -l | tr -d ' ')
-find "$CLAUDE_TMP" -name "*.output" -type f -mtime +$MAX_AGE_DAYS -delete 2>/dev/null
-OUTPUT_AFTER=$(find "$CLAUDE_TMP" -name "*.output" -type f 2>/dev/null | wc -l | tr -d ' ')
-OUTPUT_DELETED=$((OUTPUT_BEFORE - OUTPUT_AFTER))
-[ "$OUTPUT_DELETED" -gt 0 ] && log "Deleted $OUTPUT_DELETED old .output files (>$MAX_AGE_DAYS days)"
+# Inspect stale temp files without deleting them
+OUTPUT_COUNT=$(find "$CLAUDE_TMP" -name "*.output" -type f 2>/dev/null | wc -l | tr -d ' ')
+STALE_OUTPUT_COUNT=$(find "$CLAUDE_TMP" -name "*.output" -type f -mtime +$MAX_AGE_DAYS 2>/dev/null | wc -l | tr -d ' ')
+DIR_COUNT=$(find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+STALE_DIR_COUNT=$(find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d -mtime +$MAX_AGE_DAYS 2>/dev/null | wc -l | tr -d ' ')
 
-# Clean old task directories (abandoned sessions)
-DIRS_BEFORE=$(find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d -mtime +$MAX_AGE_DAYS -exec rm -rf {} \; 2>/dev/null
-DIRS_AFTER=$(find "$CLAUDE_TMP" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-DIRS_DELETED=$((DIRS_BEFORE - DIRS_AFTER))
-[ "$DIRS_DELETED" -gt 0 ] && log "Deleted $DIRS_DELETED old session directories (>$MAX_AGE_DAYS days)"
+log "Temp artifacts: $OUTPUT_COUNT .output file(s), $STALE_OUTPUT_COUNT older than ${MAX_AGE_DAYS}d; $DIR_COUNT directory(s), $STALE_DIR_COUNT older than ${MAX_AGE_DAYS}d"
 
-# Recalculate size after age-based cleanup
-TMP_KB=$(du -sk "$CLAUDE_TMP" 2>/dev/null | awk '{print $1}')
-TMP_GB=$((TMP_KB / 1048576))
-
-# If still over threshold, clean everything
+# If over threshold, warn but preserve artifacts
 if [ "$TMP_GB" -ge "$MAX_GB" ]; then
- log "Threshold exceeded (${TMP_GB}GB >= ${MAX_GB}GB), cleaning all temp files"
- rm -rf "$CLAUDE_TMP"
- log "Deleted temp directory"
+ log "WARNING threshold exceeded (${TMP_GB}GB >= ${MAX_GB}GB); no deletion performed"
  
  # Desktop notification
- osascript -e "display notification \"Cleaned ${TMP_GB}GB of Claude temp files\" with title \"Claude Reaper\" subtitle \"Disk cleanup\"" 2>/dev/null &
+ osascript -e "display notification \"Claude temp files are using ${TMP_GB}GB; no deletion performed\" with title \"Claude Reaper\" subtitle \"Disk inspection\"" 2>/dev/null &
 fi
 
-# Also clean old ~/.claude/tasks files
+# Inspect ~/.claude/tasks without deleting
 CLAUDE_TASKS="$HOME/.claude/tasks"
 if [ -d "$CLAUDE_TASKS" ]; then
- TASKS_BEFORE=$(find "$CLAUDE_TASKS" -type f 2>/dev/null | wc -l | tr -d ' ')
- find "$CLAUDE_TASKS" -type f -mtime +$MAX_AGE_DAYS -delete 2>/dev/null
- TASKS_AFTER=$(find "$CLAUDE_TASKS" -type f 2>/dev/null | wc -l | tr -d ' ')
- TASKS_DELETED=$((TASKS_BEFORE - TASKS_AFTER))
- [ "$TASKS_DELETED" -gt 0 ] && log "Deleted $TASKS_DELETED old files from ~/.claude/tasks"
+ TASK_COUNT=$(find "$CLAUDE_TASKS" -type f 2>/dev/null | wc -l | tr -d ' ')
+ TASKS_SIZE=$(du -sh "$CLAUDE_TASKS" 2>/dev/null | awk '{print $1}')
+ log "Preserved ~/.claude/tasks: $TASK_COUNT file(s), size=$TASKS_SIZE"
 fi
+
+# Inspect ~/.claude/projects session logs without deleting
+CLAUDE_PROJECTS="$HOME/.claude/projects"
+if [ -d "$CLAUDE_PROJECTS" ]; then
+ PROJECT_COUNT=$(find "$CLAUDE_PROJECTS" -name "*.jsonl" -type f 2>/dev/null | wc -l | tr -d ' ')
+ PROJECT_SIZE=$(du -sh "$CLAUDE_PROJECTS" 2>/dev/null | awk '{print $1}')
+ log "Preserved ~/.claude/projects: $PROJECT_COUNT jsonl log(s), size=$PROJECT_SIZE"
+fi
+
+log "No deletions performed; session logs and Claude task files are preserved."

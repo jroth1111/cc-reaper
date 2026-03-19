@@ -35,6 +35,15 @@ _claude_session_pids() {
   '
 }
 
+_claude_active_session_count() {
+  local count=0
+  while IFS= read -r pid; do
+    [ -z "$pid" ] && continue
+    count=$((count + 1))
+  done < <(_claude_session_pids)
+  echo "$count"
+}
+
 _claude_process_rss_mb() {
   local pid=$1
   local rss
@@ -427,6 +436,10 @@ claude-guard() {
   local max_rss_mb=${CC_MAX_RSS_MB:-4096}
   local max_descendants=${CC_MAX_DESCENDANTS:-128}
   local max_zombies=${CC_MAX_ZOMBIES:-16}
+  local kill_bloated=${CC_GUARD_KILL_BLOATED:-0}
+  local kill_idle=${CC_GUARD_KILL_IDLE:-0}
+  local kill_descendants=${CC_GUARD_KILL_DESCENDANTS:-0}
+  local kill_zombies=${CC_GUARD_KILL_ZOMBIES:-1}
 
   if ! echo "$max_rss_mb" | grep -qE '^[0-9]+$'; then
     _say "WARNING: CC_MAX_RSS_MB='$max_rss_mb' is not numeric, using default 4096"
@@ -443,6 +456,7 @@ claude-guard() {
 
   _say "=== Claude Guard ==="
   _say "  Config: max_sessions=$max_sessions, idle_threshold=${idle_threshold}%, max_mem=${max_rss_mb} MB, max_descendants=$max_descendants, max_zombies=$max_zombies"
+  _say "  Actions: kill_zombies=$kill_zombies, kill_descendants=$kill_descendants, kill_bloated=$kill_bloated, kill_idle=$kill_idle"
   _say ""
 
   local session_pids=()
@@ -461,6 +475,7 @@ claude-guard() {
   local forced_reason=()
   local forced_metric=()
   local idle_rows=""
+  local alert_rows=""
   local live_count=0
 
   _say "  PID     MEM(MB)   CPU% ELAPSED    PROC   ZOMB   STATUS"
@@ -484,21 +499,36 @@ claude-guard() {
     if [ "$zombie_count" -ge "$max_zombies" ]; then
       session_status="[RUNAWAY]"
       reason="zombies"
-      forced_pids+=("$pid")
-      forced_reason+=("$reason")
-      forced_metric+=("$zombie_count")
+      if [ "$kill_zombies" = "1" ]; then
+        forced_pids+=("$pid")
+        forced_reason+=("$reason")
+        forced_metric+=("$zombie_count")
+      else
+        alert_rows="${alert_rows}zombies\t${pid}\t${etime}\t${zombie_count}\t${mem_mb}\n"
+        session_status="[RUNAWAY:ALERT]"
+      fi
     elif [ "$desc_count" -ge "$max_descendants" ]; then
       session_status="[RUNAWAY]"
       reason="descendants"
-      forced_pids+=("$pid")
-      forced_reason+=("$reason")
-      forced_metric+=("$desc_count")
+      if [ "$kill_descendants" = "1" ]; then
+        forced_pids+=("$pid")
+        forced_reason+=("$reason")
+        forced_metric+=("$desc_count")
+      else
+        alert_rows="${alert_rows}descendants\t${pid}\t${etime}\t${desc_count}\t${mem_mb}\n"
+        session_status="[RUNAWAY:ALERT]"
+      fi
     elif [ "$mem_mb" -ge "$max_rss_mb" ]; then
       session_status="[BLOATED]"
       reason="memory"
-      forced_pids+=("$pid")
-      forced_reason+=("$reason")
-      forced_metric+=("$mem_mb")
+      if [ "$kill_bloated" = "1" ]; then
+        forced_pids+=("$pid")
+        forced_reason+=("$reason")
+        forced_metric+=("$mem_mb")
+      else
+        alert_rows="${alert_rows}memory\t${pid}\t${etime}\t${mem_mb}\t${mem_mb}\n"
+        session_status="[BLOATED:ALERT]"
+      fi
     elif [ "$cpu_int" -lt "$idle_threshold" ]; then
       session_status="[IDLE]"
       idle_rows="${idle_rows}${age_secs}\t${pid}\t${etime}\t${mem_mb}\n"
@@ -514,6 +544,8 @@ claude-guard() {
 
   local killed=0
   local freed_mb=0
+  local planned_kills=0
+  local planned_freed_mb=0
 
   if [ "${#forced_pids[@]}" -gt 0 ]; then
     _say ""
@@ -524,6 +556,8 @@ claude-guard() {
       local reason=${forced_reason[$i]}
       local metric=${forced_metric[$i]}
       local mem_mb=$(_claude_session_memory_mb "$pid")
+      planned_kills=$((planned_kills + 1))
+      planned_freed_mb=$((planned_freed_mb + mem_mb))
 
       if $dry_run; then
         _say "  [DRY-RUN] Would kill PID $pid ($reason=$metric, memory=${mem_mb} MB)"
@@ -541,7 +575,7 @@ claude-guard() {
   local remaining=$((session_count - killed))
   local idle_count=0
   [ -n "$idle_rows" ] && idle_count=$(printf "%b" "$idle_rows" | sed '/^$/d' | wc -l | tr -d ' ')
-  if [ "$remaining" -gt "$max_sessions" ] && [ "$idle_count" -gt 0 ]; then
+  if [ "$remaining" -gt "$max_sessions" ] && [ "$idle_count" -gt 0 ] && [ "$kill_idle" = "1" ]; then
     local to_kill=$((remaining - max_sessions))
     [ "$to_kill" -gt "$idle_count" ] && to_kill=$idle_count
 
@@ -549,6 +583,8 @@ claude-guard() {
     _say "  --- Killing $to_kill idle session(s) to reach limit of $max_sessions ---"
     while IFS=$'\t' read -r age pid etime mem_mb; do
       [ -z "$pid" ] && continue
+      planned_kills=$((planned_kills + 1))
+      planned_freed_mb=$((planned_freed_mb + mem_mb))
       if $dry_run; then
         _say "  [DRY-RUN] Would kill PID $pid (idle ${etime}, memory=${mem_mb} MB)"
       else
@@ -561,9 +597,38 @@ claude-guard() {
   fi
 
   _say ""
-  if [ "$killed" -gt 0 ]; then
+  local alert_count=0
+  [ -n "$alert_rows" ] && alert_count=$(printf "%b" "$alert_rows" | sed '/^$/d' | wc -l | tr -d ' ')
+
+  if [ "$alert_count" -gt 0 ]; then
+    _say "  Inspect-only alerts:"
+    while IFS=$'\t' read -r kind pid etime metric mem_mb; do
+      [ -z "$pid" ] && continue
+      case "$kind" in
+        zombies)
+          _say "    PID $pid has $metric zombies after $etime (memory=${mem_mb} MB)"
+          ;;
+        descendants)
+          _say "    PID $pid has $metric descendants after $etime (memory=${mem_mb} MB)"
+          ;;
+        memory)
+          _say "    PID $pid is using ${metric} MB after $etime"
+          ;;
+      esac
+    done < <(printf "%b" "$alert_rows" | sed '/^$/d')
+  fi
+
+  if [ "$remaining" -gt "$max_sessions" ] && [ "$idle_count" -gt 0 ] && [ "$kill_idle" != "1" ]; then
+    _say "  Idle eviction disabled: $idle_count idle session(s), $remaining total session(s)"
+  fi
+
+  if $dry_run && [ "$planned_kills" -gt 0 ]; then
+    _say "  Would reap $planned_kills session(s), free ~${planned_freed_mb} MB"
+  elif [ "$killed" -gt 0 ]; then
     _say "  Reaped $killed session(s), freed ~${freed_mb} MB"
     $dry_run || _claude_guard_notify "Claude Guard" "Cleanup complete" "Reaped $killed session(s), freed ~${freed_mb} MB"
+  elif [ "$alert_count" -gt 0 ]; then
+    _say "  No live sessions killed under safe defaults."
   else
     _say "  All clear — no sessions to reap."
   fi
@@ -614,6 +679,8 @@ claude-disk() {
   fi
 
   echo ""
+  echo "  Preservation policy: cc-reaper does not delete ~/.claude/projects session logs or ~/.claude/tasks files."
+  echo ""
   echo "--- Disk Summary ---"
   df -h / 2>/dev/null | tail -1 | awk '{printf "  Root filesystem: %s used, %s available\n", $3, $4}'
 }
@@ -625,13 +692,21 @@ claude-clean-disk() {
   echo "=== Claude Code Disk Cleanup ==="
 
   local claude_tmp="/private/tmp/claude-$(id -u)"
-  local claude_tasks="$HOME/.claude/tasks"
+  local active_sessions
+  active_sessions=$(_claude_active_session_count)
 
   if [ -d "$claude_tmp" ]; then
     local before_size
     before_size=$(du -s "$claude_tmp" 2>/dev/null | awk '{print $1}')
 
     if $force; then
+      if [ "$active_sessions" -gt 0 ]; then
+        echo "  Refusing to delete $claude_tmp while $active_sessions Claude session(s) are active."
+        echo "  Close Claude first, then re-run 'claude-clean-disk --force' if you want to purge temp files."
+        echo ""
+        echo "  Session logs and Claude task files remain preserved."
+        return 1
+      fi
       echo "  Cleaning $claude_tmp ..."
       rm -rf "$claude_tmp"
       local freed_mb=$((before_size * 512 / 1048576))
@@ -646,18 +721,8 @@ claude-clean-disk() {
     fi
   fi
 
-  if [ -d "$claude_tasks" ]; then
-    local tasks_count
-    tasks_count=$(find "$claude_tasks" -type f 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$tasks_count" -gt 10 ]; then
-      echo ""
-      echo "  Note: $tasks_count files exist in ~/.claude/tasks"
-      echo "  Manual cleanup: rm -rf ~/.claude/tasks/*"
-    fi
-  fi
-
   echo ""
-  echo "  Session log hygiene: run 'claude-disk' to inspect oversized ~/.claude/projects/*.jsonl files."
+  echo "  Preservation policy: ~/.claude/projects session logs and ~/.claude/tasks files are never deleted by cc-reaper."
 }
 
 _claude_disk_check() {

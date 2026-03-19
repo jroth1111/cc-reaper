@@ -1,6 +1,7 @@
 #!/bin/bash
-# cc-reaper guard monitor — reaps bloated and runaway live Claude Code sessions
-# Runs periodically via macOS LaunchAgent and delegates to claude-guard.
+# cc-reaper guard monitor — runs claude-guard with safe defaults
+# Runs periodically via macOS LaunchAgent and only auto-reaps conditions that are
+# explicitly configured for destructive action.
 
 LOG_DIR="$HOME/.cc-reaper/logs"
 LOG_FILE="$LOG_DIR/guard-monitor.log"
