@@ -55,5 +55,5 @@ Observed outcomes:
 
 - The live-session memory-leak mitigations are still reactive. They reduce blast radius; they do not fix upstream leaks.
 - The automatic mitigations are now narrower on purpose: they only reap Claude-managed descendants and require persistence before most destructive actions.
-- The strongest automatic path is the sourced shell wrapper plus the macOS LaunchAgent suite. Proc-janitor users still get orphan cleanup but not live-session growth reaping.
+- The strongest automatic path is the sourced shell wrapper plus the macOS LaunchAgent suite. Proc-janitor users now get a narrower, safer orphan cleanup profile plus no live-session growth reaping.
 - Windows remains out of scope.

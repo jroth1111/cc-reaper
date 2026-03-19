@@ -17,18 +17,17 @@ grace_period = 60
 sigterm_timeout = 5
 
 # ─── Target Patterns ────────────────────────────────────────────────────────
-# Only orphaned processes (PPID=1) matching these patterns will be cleaned.
+# Only orphaned processes (PPID=1) matching these clearly Claude-specific
+# patterns will be cleaned.
+#
+# IMPORTANT: proc-janitor cannot consult the descendant ledger, so this config
+# intentionally avoids broad generic MCP launch shapes like `python.*mcp`,
+# `uvx.*mcp`, or `node.*mcp-server`. That makes the proc-janitor path safer,
+# but less complete than the macOS LaunchAgent suite.
 
 targets = [
     "claude.*stream-json",
-    "npm exec @upstash",
-    "npm exec mcp-",
-    "node.*mcp-server",
-    "npx.*mcp-server",
-    "docker run .*mcp/",
-    "python.*mcp",
-    "uvx?.*mcp",
-    "node.*sequential-thinking",
+    "claude.*--session-id",
     "worker-service.cjs.*--daemon",
     "bun.*worker-service",
 ]

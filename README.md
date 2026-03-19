@@ -182,7 +182,7 @@ launchctl unload ~/Library/LaunchAgents/com.cc-reaper.disk-monitor.plist
 
 Rust-based daemon with grace period, whitelist, and detailed logging. Requires Homebrew or Cargo.
 
-This path is less precise than the LaunchAgent suite because `proc-janitor` cannot consult the descendant ledger and still relies on orphan regexes.
+This path is less precise than the LaunchAgent suite because `proc-janitor` cannot consult the descendant ledger and still relies on orphan regexes. The shipped config is intentionally conservative and only reaps clearly Claude-specific orphan processes, not generic standalone MCP servers.
 
 ```bash
 # Install

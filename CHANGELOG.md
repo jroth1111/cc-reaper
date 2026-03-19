@@ -10,6 +10,7 @@
 ### Fixed
 - **LaunchAgent orphan cleanup no longer SIGKILLs skipped processes in the survivor sweep** after the whitelist/managed-process filters already chose to preserve them.
 - **TTY-based `caffeinate` cleanup was removed** because it could kill non-leak user work on the same terminal; managed-process cleanup and ledger proof now cover the Claude-owned case instead.
+- **proc-janitor targets were narrowed to Claude-specific orphan processes** so the regex-based fallback path no longer reaps generic standalone orphaned MCP server shapes.
 
 ## [0.7.0] - 2026-03-19
 

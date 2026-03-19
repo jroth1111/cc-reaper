@@ -26,6 +26,7 @@ Last reviewed: 2026-03-19 UTC
   - only after minimum age and confirmation streaks, to avoid killing healthy transient work
 - On macOS, session memory prefers `footprint` over RSS so hidden IOAccelerator/WebKit leaks are visible to the guard.
 - Stop hook, manual cleanup, and LaunchAgent orphan monitor only reap Claude-managed descendants plus ledger-backed orphan proof; they no longer reap arbitrary background jobs just because Claude once spawned them.
+- The proc-janitor alternative is now intentionally conservative: it only matches clearly Claude-specific orphan processes and no longer tries to reap generic standalone MCP server shapes.
 - Disk tooling is inspect-only except explicit `claude-clean-disk --force`.
 
 ## Category Matrix
