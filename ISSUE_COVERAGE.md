@@ -1,163 +1,47 @@
-# Claude Code Memory/Process Issue Coverage Matrix
+# Claude Code Memory / Process Issue Coverage
 
-Generated from `gh issue list --repo anthropics/claude-code` analysis of 200+ issues.
+Last reviewed: 2026-03-19 UTC
 
-## CRITICAL MEMORY LEAKS (>8GB) — Mitigation Status
+## Review Inputs
 
-| Issue | Title | Severity | Mitigation | Coverage |
-|-------|-------|----------|------------|----------|
-| #4953 | 120GB+ RAM, OOM killed | CRITICAL | `claude-guard` RSS threshold + `claude-health` warning | ⚠️ PARTIAL |
-| #17615 | 304GB memory usage | CRITICAL | Threshold killing at CC_MAX_RSS_MB | ⚠️ PARTIAL |
-| #33735 | 18GB private memory | HIGH | `claude-guard` + monitoring | ⚠️ PARTIAL |
-| #30470 | 49GB kernel memory allocation | CRITICAL | Threshold kill + NODE_OPTIONS | ⚠️ PARTIAL |
-| #11315 | 129GB RAM system freeze | CRITICAL | Threshold kill + NODE_OPTIONS | ⚠️ PARTIAL |
-| #12987 | Unbounded memory leak (Linux) | CRITICAL | Threshold kill + NODE_OPTIONS | ⚠️ PARTIAL |
-| #21378 | 15GB freeze after 20 min | CRITICAL | Threshold kill + NODE_OPTIONS | ⚠️ PARTIAL |
+- `gh issue list --repo anthropics/claude-code --state open --search "memory" --limit 100`
+- `gh issue list --repo anthropics/claude-code --state open --search "leak" --limit 100`
+- `gh issue list --repo anthropics/claude-code --state open --search "ArrayBuffer OR arraybuffer OR streaming" --limit 100`
+- Spot-checked issue bodies: `#20369`, `#33947`, `#35418`, `#33589`, `#33915`, `#32760`, `#35804`, `#27788`, `#18011`, `#26911`, `#34783`
 
-**Mitigation Gap**: These are root-cause issues requiring upstream fixes. Our mitigation is reactive (threshold-based killing).
+## Coverage Semantics
 
-## ARRAYBUFFER/STREAMING LEAKS — Mitigation Status
+- `FULL` — `cc-reaper` ships an automatic mitigation path that materially contains the issue class on supported platforms.
+- `PARTIAL` — `cc-reaper` materially reduces blast radius, but only with reactive reaping, scoped environment caps, or platform limits.
+- `DETECT` — `cc-reaper` surfaces the condition but does not automatically mitigate it.
+- `NONE` — no shipped mitigation exists.
 
-| Issue | Title | Growth Rate | Mitigation | Coverage |
-|-------|-------|-------------|------------|----------|
-| #33589 | BytesInternalReadableStreamSource | 54 MB/s | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #33915 | ArrayBuffers not released | 6 GB/hr | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #32920 | 14K ArrayBuffers streaming | 480 MB/hr | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #32892 | ArrayBuffer accumulation | 92 GB/hr | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #33447 | API Response bodies | 181 MB/turn | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #33839 | Massive ArrayBuffer allocation | 2.26 GB/40s | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #33436 | ArrayBuffer leak | 2.7 GB/64s | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #33413 | arrayBuffers 4.2GB fresh session | CRITICAL | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #33320 | 2.92 GB external ArrayBuffers | HIGH | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #33551 | ArrayBuffers 950 MB/hr | HIGH | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
-| #34967 | ArrayBuffers 6.3GB in 5 min | HIGH | NODE_OPTIONS cap + threshold | ⚠️ PARTIAL |
+## Shipped Mitigation Stack
 
-**Mitigation Strategy**: 
-1. `claude-health` warns if NODE_OPTIONS not set
-2. `claude-guard` kills at RSS threshold
-3. User must set `export NODE_OPTIONS="--max-old-space-size=8192"`
+- Sourced `claude` wrapper injects `NODE_OPTIONS=--max-old-space-size=8192` unless the user already supplied a cap or disables `CC_REAPER_AUTO_NODE_OPTIONS`.
+- Recommended macOS LaunchAgent guard monitor samples every 30 seconds and auto-reaps:
+  - zombie-heavy sessions: `CC_MAX_ZOMBIES=16`
+  - descendant-heavy sessions: `CC_MAX_DESCENDANTS=96`
+  - fast-growing sessions: `CC_MAX_GROWTH_MB_PER_MIN=512` once memory is already `>= 1024 MB`
+  - bloated sessions: `CC_MAX_RSS_MB=3072`
+- On macOS, session memory prefers `footprint` over RSS so hidden IOAccelerator/WebKit leaks are visible to the guard.
+- Stop hook, manual cleanup, and LaunchAgent orphan monitor all use whitelist-aware PGID cleanup plus ledger-backed orphan proof.
+- Disk tooling is inspect-only except explicit `claude-clean-disk --force`.
 
-## PROCESS/ORPHAN LEAKS — Mitigation Status
+## Category Matrix
 
-| Issue | Title | Platform | Mitigation | Coverage |
-|-------|-------|----------|------------|----------|
-| #33947 | MCP server/subagent orphan accumulation | macOS | Stop hook + LaunchAgent orphan-monitor + descendant ledger | ✅ FULL |
-| #20369 | Orphaned subagent 30GB memory leak | macOS | PGID cleanup kills entire process group; escaped descendants require ledger proof | ✅ FULL |
-| #28046 | Caffeinate leak — thousands spawned | macOS | TTY-matched cleanup in stop hook | ✅ FULL |
-| #24649 | MCP processes not cleaned on exit | macOS | Stop hook runs on session end | ✅ FULL |
-| #19045 | Subagent processes not terminated | Linux | PGID cleanup works on Linux | ✅ FULL |
-| #1935 | MCP servers not terminated on exit | macOS | Stop hook + ledger-based orphan fallback | ✅ FULL |
-| #18405 | Orphaned processes crashing computer | All | LaunchAgent monitors every 10 min | ✅ FULL |
-| #35673 | MCP subprocesses not cleaned on terminal close | macOS | LaunchAgent catches terminal close | ✅ FULL |
-| #34092 | statusLine zombie accumulation | macOS | `claude-check-zombies` detection | 🔍 DETECT |
-| #29413 | VS Code extension process leak | Windows | Not covered (different subsystem) | ❌ NONE |
-| #32183 | Windows bash.exe orphan shells | Windows | Not covered (platform limitation) | ❌ NONE |
+| Category | Representative issues | Current mitigation | Coverage | Residual gap |
+|---|---|---|---|---|
+| ArrayBuffer / streaming / external-memory leaks | `#33589`, `#33915`, `#33436`, `#32729`, `#33413`, `#34967` | Scoped heap cap on `claude` launch + 30-second growth/bloated-session reaper | `PARTIAL` | Root cause is upstream; very fast spikes can still outrun polling, and proc-janitor users do not get live-session guarding |
+| Native / node-pty / generic CLI growth | `#32760`, `#33673`, `#34652`, `#25023`, `#33735`, `#17615` | 30-second growth detection + absolute memory ceiling + descendant ceiling | `PARTIAL` | Still reactive; no native-memory root-cause fix exists locally |
+| macOS footprint-hidden / GPU / WebKit leaks | `#35804`, `#18859`, `#33453` | `footprint`-aware accounting + 3 GB guard ceiling + idle session visibility | `PARTIAL` | `cc-reaper` can only recycle the leaking session; it cannot release GPU slabs in-process |
+| Orphan processes / subprocess explosions / PID exhaustion | `#20369`, `#33947`, `#24649`, `#35673`, `#35418`, `#34092` | Stop hook + descendant ledger + whitelist-aware orphan monitor + descendant/zombie reaping | `FULL` on macOS/Linux | Windows process-model issues remain out of scope |
+| V8 heap reservation / missing default cap | `#27788`, `#18011`, `#30131`, `#19025`, `#1421` | Scoped `claude` wrapper injects `--max-old-space-size=8192`; health check exposes bypass cases | `PARTIAL` | Users who bypass the wrapper with `command claude` or run from unsourced shells lose the automatic cap |
+| Disk growth / temp artifacts | `#26911`, `#34783`, `#24207`, `#28126`, `#8856` | Inspect-only disk monitor + explicit temp purge when no sessions are active | `PARTIAL` / `DETECT` | Preserved logs/tasks are intentionally not auto-deleted |
+| Windows-specific memory leaks | `#24827`, `#33626`, `#33588`, `#33437`, `#29413`, `#32183` | None | `NONE` | Would require a Windows-specific process/session implementation |
 
-## DISK LEAKS — Mitigation Status
+## Bottom Line
 
-| Issue | Title | Size | Mitigation | Coverage |
-|-------|-------|------|------------|----------|
-| #26911 | Task .output files | 537 GB | Inspect-only disk monitor + manual temp purge | ⚠️ PARTIAL |
-| #34783 | Self-referential disk loop | 696 GB | Inspect-only disk monitor + manual temp purge | ⚠️ PARTIAL |
-| #24207 | ~/.claude grows unbounded | Variable | `claude-disk` monitoring | 🔍 DETECT |
-| #28126 | ~/.claude/tasks/ directories leak | Variable | Preserved by design; inspect-only visibility | 🔍 DETECT |
-| #8856 | /tmp/claude-*-cwd tracking files | Variable | Manual temp purge | ⚠️ PARTIAL |
-
-## V8 HEAP/OOM — Mitigation Status
-
-| Issue | Title | Root Cause | Mitigation | Coverage |
-|-------|-------|------------|------------|----------|
-| #27788 | Unbounded V8 heap reservation | Missing NODE_OPTIONS | `claude-health` warning | 🔍 DETECT |
-| #18011 | V8 OOM crashes (SIGABRT) | Heap exhaustion | NODE_OPTIONS cap | ⚠️ PARTIAL |
-| #30131 | SIGABRT sudden memory exhaustion | Heap exhaustion | NODE_OPTIONS cap | ⚠️ PARTIAL |
-| #19025 | Session JSONL exceeds V8 heap | File size | NODE_OPTIONS cap | ⚠️ PARTIAL |
-| #1421 | Heap Out of Memory while thinking | Heap exhaustion | NODE_OPTIONS cap | ⚠️ PARTIAL |
-
-## WINDOWS-SPECIFIC — Mitigation Status
-
-| Issue | Title | Growth Rate | Mitigation | Coverage |
-|-------|-------|-------------|------------|----------|
-| #32692 | GrowthBook polling leak | 300-700 MB/min | `claude-check-growthbook` + env var | 🔍 DETECT |
-| #33588 | Working Set growth (Windows) | 3.5 GB/min | Not covered | ❌ NONE |
-| #33415 | WSL2 heap exhaustion | Variable | Not covered | ❌ NONE |
-| #33626 | Native memory growth (Win11) | 18.6 MB/s | Not covered | ❌ NONE |
-| #29413 | VS Code extension process leak | 11+ GB | Not covered | ❌ NONE |
-| #32183 | Windows bash.exe orphan shells | Variable | Not covered | ❌ NONE |
-| #24827 | Memory leak in windows | Variable | Not covered | ❌ NONE |
-| #24840 | Extreme memory (13GB RSS, 47GB commit) | Variable | Not covered | ❌ NONE |
-
-## COVERAGE SUMMARY
-
-| Category | Total | Fully Mitigated | Partially Mitigated | Detection Only | Not Covered |
-|----------|-------|-----------------|--------------------|-----------------|-------------|
-| Critical Memory (>8GB) | 7 | 0 | 7 | 0 | 0 |
-| ArrayBuffer Leaks | 11 | 0 | 11 | 0 | 0 |
-| Process/Orphan Leaks | 11 | 8 | 0 | 1 | 2 |
-| Disk Leaks | 5 | 0 | 3 | 2 | 0 |
-| V8 Heap/OOM | 5 | 0 | 4 | 1 | 0 |
-| Windows-Specific | 8 | 0 | 0 | 1 | 7 |
-| **TOTAL** | **47** | **8** | **25** | **5** | **9** |
-
-## MITIGATION TOOLS
-
-| Tool | Purpose | Issues Addressed |
-|------|---------|------------------|
-| `claude-health` | Comprehensive health check | All issues |
-| `claude-check-growthbook` | Detect GrowthBook leak (#32692) | Windows GrowthBook |
-| `claude-check-zombies` | Detect statusLine zombies (#34092) | statusLine bug |
-| `claude-guard` | Alert-first live-session guard; auto-kill only for explicitly enabled conditions | All memory leaks |
-| `claude-cleanup` | Kill orphan PGIDs and ledger-proven orphan descendants | All process leaks |
-| `claude-disk` | Check disk usage | All disk leaks |
-| `claude-clean-disk` | Manual temp purge when no sessions are active | #26911, #34783 |
-| `claude-ram` | Memory monitoring | All memory issues |
-| `claude-sessions` | Session listing | #33979 |
-
-## AUTOMATIC MITIGATIONS
-
-| Component | Frequency | Purpose | Issues |
-|-----------|-----------|---------|--------|
-| Stop Hook | Session end | Record descendant ledger, then kill PGID group | Process leaks |
-| orphan-monitor | Every 10 min | Kill PPID=1 processes only when tied to a recorded Claude session | Orphan processes |
-| disk-monitor | Every 1 hour | Inspect temp/tasks/logs without deleting preserved artifacts | Disk leaks |
-| guard-monitor | Every 2 min | Run safe-default `claude-guard` | Memory leaks |
-
-## RECOMMENDED USER SETUP
-
-```bash
-# Add to ~/.zshrc or ~/.bashrc
-export NODE_OPTIONS="--max-old-space-size=8192"  # Mitigate #27788
-export CC_MAX_RSS_MB=4096                         # Alert at 4GB
-export CC_GUARD_KILL_BLOATED=1                    # Optional: auto-kill bloated live sessions
-source ~/.cc-reaper/shell/claude-cleanup.sh
-
-# Windows-specific (if applicable)
-export CLAUDE_CODE_DISABLE_GROWTHBOOK=1          # Mitigate #32692
-
-# Periodic health check
-claude-health
-
-# Check specific issues
-claude-check-growthbook  # Windows GrowthBook leak
-claude-check-zombies     # statusLine zombie bug
-```
-
-## ROOT CAUSE ANALYSIS
-
-### Memory Leaks (Upstream Issues)
-- ArrayBuffer accumulation from streaming responses
-- API response bodies not garbage collected  
-- Native addon memory leaks
-- These require upstream fixes; we provide reactive mitigation
-
-### Process Leaks (Platform Limitation)
-- macOS lacks `prctl(PR_SET_PDEATHSIG)`
-- We fully mitigate via PGID cleanup + LaunchAgent
-
-### V8 Heap (User Configuration)
-- Claude Code doesn't set `NODE_OPTIONS` by default
-- We warn users but cannot force the setting
-
-### Windows-Specific (Platform Gap)
-- Different process model, no PGID
-- Would need Windows-specific implementation
-- Currently not covered
+- The process-leak class is mitigated well on macOS/Linux.
+- The live-session memory-leak class is now automatically mitigated on the recommended macOS LaunchAgent path, but it remains reactive rather than preventive.
+- Windows-specific leak reports are still uncovered.

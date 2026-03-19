@@ -1,142 +1,58 @@
-# OPEN Memory Leak Issues - Mitigation Verification
+# Open Claude Code Leak Verification
 
-**Analysis Date**: $(date +%Y-%m-%d)
-**Source**: `gh issue list --repo anthropics/claude-code --search "memory"`
-**Total OPEN Issues**: 29
+Analysis date: 2026-03-19 UTC
 
-## Executive Summary
+## Reviewed Searches
 
-All memory leaks are **root-cause upstream issues** in Node.js/V8/undici.
-Our mitigations are **reactive** (threshold-based killing), not **preventive**.
+- `gh issue list --repo anthropics/claude-code --state open --search "memory" --limit 100`
+- `gh issue list --repo anthropics/claude-code --state open --search "leak" --limit 100`
+- `gh issue list --repo anthropics/claude-code --state open --search "ArrayBuffer OR arraybuffer OR streaming" --limit 100`
 
-| Mitigation Type | Issues | Tool | Effectiveness |
-|-----------------|--------|------|---------------|
-| NODE_OPTIONS cap | 12 | claude-health warning | ⚠️ Requires user action |
-| RSS threshold kill | 25 | claude-guard | ⚠️ Reactive, not preventive |
-| Platform gap | 4 | None | ❌ Windows not covered |
+## Current Position
 
-## ArrayBuffer/Streaming Leaks (12 OPEN Issues)
+Open Claude Code leak reports still fall into the same broad classes:
 
-All caused by `BytesInternalReadableStreamSource` in Node.js undici.
+1. Live-session memory growth in ArrayBuffers, native memory, or hidden macOS footprint.
+2. Orphaned subprocesses, zombie accumulation, and runaway descendant trees.
+3. V8 heap exhaustion caused by missing or ineffective heap caps.
+4. Disk growth in temp artifacts, task outputs, and preserved logs.
+5. Windows-specific leaks outside the current macOS/Linux process model.
 
-| Issue | Growth | Mitigation Applied |
-|-------|--------|-------------------|
-| #33589 | 54 MB/s | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #33915 | 6 GB/hr | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #33436 | 2.7GB/64s | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #32729 | 4GB+ at startup | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #33644 | Extreme growth | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #33413 | 4.2GB fresh session | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #32920 | 480 MB/hr | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #33512 | 5.9GB/26s | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #34219 | 489 MB/hr | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #33437 | 23GB/hr (Windows) | **NOT COVERED** - Windows gap |
-| #32892 | 92 GB/hr | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
-| #34967 | 6.3GB/5min | `claude-guard` kills at 4GB + NODE_OPTIONS warning |
+`cc-reaper` now mitigates these classes as follows:
 
-**Mitigation Strategy**:
-1. `claude-health` warns if NODE_OPTIONS not set
-2. `claude-guard` kills session at RSS threshold
-3. LaunchAgent runs guard-monitor every 5 minutes
+| Cluster | Representative issues | Shipped mitigation | Result |
+|---|---|---|---|
+| Fast ArrayBuffer / external-memory growth | `#33589`, `#33915`, `#33436`, `#32729`, `#34967` | Scoped heap cap on `claude` launch + 30-second LaunchAgent guard + growth-rate kill + 3 GB absolute ceiling | `PARTIAL` |
+| Native-memory growth / node-pty / generic CLI leaks | `#32760`, `#33673`, `#34652`, `#25023`, `#33735`, `#17615` | 30-second guard + descendant ceiling + absolute memory ceiling | `PARTIAL` |
+| Hidden macOS footprint / GPU leaks | `#35804` | `footprint`-aware memory accounting + 3 GB guard ceiling | `PARTIAL` |
+| Orphan subprocesses / zombie explosions / PID pressure | `#20369`, `#33947`, `#35418`, `#34092`, `#35673` | Stop hook + descendant ledger + whitelist-aware orphan monitor + zombie/descendant reaping | `FULL` on macOS/Linux |
+| Missing default V8 cap / heap OOM | `#27788`, `#18011`, `#30131`, `#19025`, `#1421` | Scoped `claude` wrapper injects `--max-old-space-size=8192`; `claude-health` exposes bypass cases | `PARTIAL` |
+| Disk growth | `#26911`, `#34783`, `#24207`, `#28126` | Inspect-only disk monitor + explicit temp purge | `PARTIAL` / `DETECT` |
+| Windows-specific leaks | `#24827`, `#33626`, `#33588`, `#33437`, `#29413`, `#32183` | None | `NONE` |
 
-## Critical Memory Leaks (5 OPEN Issues)
+## Local Verification Evidence
 
-| Issue | Peak Memory | Mitigation Applied |
-|-------|-------------|-------------------|
-| #17615 | 304GB+ | `claude-guard` RSS threshold (default 4GB) |
-| #33735 | 18GB | `claude-guard` RSS threshold |
-| #25023 | Huge leak | `claude-guard` RSS threshold |
-| #22162 | 8-9 GB | `claude-guard` RSS threshold |
-| #18011 | V8 OOM SIGABRT | NODE_OPTIONS + threshold |
+The following checks were run against this repository during the audit:
 
-## Windows-Specific Gaps (4 OPEN Issues)
+- `bash -n shell/claude-cleanup-runtime.bash`
+- `bash -n launchd/cc-reaper-monitor.sh`
+- `bash -n install.sh`
+- `zsh -n shell/claude-cleanup.sh`
+- `bash -lc 'source shell/claude-cleanup-runtime.bash; claude-guard --dry-run'`
+- `bash -lc 'source shell/claude-cleanup-runtime.bash; pid=$$; file=$(_claude_guard_sample_file "$pid"); _claude_guard_write_sample "$pid" 123 456 7 8 9; _claude_guard_read_sample "$pid"; rm -f "$file"'`
+- `zsh -lc 'source shell/claude-cleanup.sh; unset NODE_OPTIONS; _claude_node_options'`
+- `bash -lc 'source shell/claude-cleanup-runtime.bash; claude-health | sed -n "1,20p"'`
 
-| Issue | Description | Why Not Covered |
-|-------|-------------|-----------------|
-| #24827 | Memory leak in Windows | Windows lacks PGID, different process model |
-| #32772 | Native memory 4,700 MB/hr | Windows-specific, would need PowerShell impl |
-| #33588 | Working Set 3.5 GB/min | Windows memory management differs |
-| #33437 | ArrayBuffers 23GB/hr Windows | Windows not in scope |
+Observed outcomes:
 
-## Other Memory Issues (8 OPEN Issues)
+- All edited shell scripts parsed successfully.
+- `claude-guard --dry-run` executed cleanly against live local Claude sessions.
+- Guard sample persistence read/wrote correctly.
+- The sourced shell wrapper resolves a scoped `--max-old-space-size=8192` cap when no user cap is present.
+- `claude-health` now reports the wrapper-backed cap instead of falsely warning that `NODE_OPTIONS` is unset.
 
-| Issue | Description | Mitigation |
-|-------|-------------|------------|
-| #33507 | Memory leak | Threshold kill |
-| #34652 | Ubuntu memory leak | Threshold kill |
-| #32720 | 1.9GB high memory | Threshold kill |
-| #33673 | CLI memory leak | Threshold kill |
-| #32760 | node-pty macOS leak | Threshold kill |
-| #33594 | 1.77GB fresh session | Threshold kill |
-| #33346 | >6GB on task execution | Threshold kill |
-| #35804 | IOAccelerator GPU leak | Threshold kill |
-| #32546 | Opus 4.6 memory leak | Threshold kill |
+## Residual Gaps
 
-## Mitigation Tools Status
-
-| Tool | Function | Working |
-|------|----------|---------|
-| `claude-health` | Comprehensive check including NODE_OPTIONS warning | ✅ Verified |
-| `claude-guard` | Kills at RSS threshold | ✅ Verified |
-| `claude-ram` | Memory monitoring | ✅ Verified |
-| `claude-check-growthbook` | Detect Windows GrowthBook leak | ✅ Verified |
-| `claude-check-zombies` | Detect statusLine zombies | ✅ Verified |
-| LaunchAgent orphan-monitor | Kill PPID=1 processes every 10 min | ✅ Running |
-| LaunchAgent disk-monitor | Clean temp files every 1 hour | ✅ Running |
-| LaunchAgent guard-monitor | Kill bloated sessions every 5 min | ✅ Running |
-
-## Root Cause Analysis
-
-**Why we can only react, not prevent:**
-
-1. **ArrayBuffer leaks** - Node.js undici streaming bug
-   - Affects all versions of Node 24.x
-   - Memory not released by V8 GC
-   - Requires upstream fix
-
-2. **V8 heap reservation** - Claude Code doesn't set NODE_OPTIONS
-   - We warn but cannot force user to set it
-   - Upstream should default to 8GB cap
-
-3. **Native addon leaks** - node-pty, Bun runtime
-   - Outside our control
-   - Threshold killing is best we can do
-
-4. **Windows gaps** - Platform limitation
-   - No PGID equivalent
-   - Would need PowerShell/WSL specific code
-
-## Recommendations
-
-### For Users
-```bash
-# Essential: Set NODE_OPTIONS
-export NODE_OPTIONS="--max-old-space-size=8192"
-
-# Set lower threshold if on constrained system
-export CC_MAX_RSS_MB=2048  # Kill at 2GB instead of 4GB
-
-# Enable strict mode
-export CC_GUARD_MODE=strict
-
-# Source our tools
-source ~/.cc-reaper/shell/claude-cleanup.sh
-
-# Run health check periodically
-claude-health
-```
-
-### For Upstream
-1. Set `NODE_OPTIONS="--max-old-space-size=8192"` by default
-2. Fix undici streaming buffer release
-3. Add proper cleanup hooks for all child processes
-4. Implement Windows-specific process tracking
-
-## Conclusion
-
-- **25/29 issues** have reactive mitigation (threshold kill)
-- **3/29 issues** have detection only
-- **4/29 issues** (Windows) have no mitigation
-- **0/29 issues** have preventive mitigation
-
-Our tools are working correctly but cannot fix upstream bugs.
+- The live-session memory-leak mitigations are still reactive. They reduce blast radius; they do not fix upstream leaks.
+- The strongest automatic path is the sourced shell wrapper plus the macOS LaunchAgent suite. Proc-janitor users still get orphan cleanup but not live-session growth reaping.
+- Windows remains out of scope.

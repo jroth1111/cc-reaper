@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0] - 2026-03-19
+
+### Added
+- **Scoped `claude` launcher wrapper** — Sourcing `claude-cleanup.sh` now wraps `claude` itself and injects `--max-old-space-size=8192` unless the user already set a heap cap or disables the behavior.
+- **Growth-rate leak detection** — `claude-guard` now persists per-session samples and can classify a live session as leaking before it reaches the absolute memory ceiling.
+
+### Changed
+- **LaunchAgent guard monitor is now an actual mitigation layer** — The macOS guard monitor runs every 30 seconds, lowers its automatic memory ceiling to 3 GB, and auto-reaps bloated, descendant-heavy, zombie-heavy, and fast-growing sessions by default.
+- **Manual and automatic orphan cleanup paths are now aligned** — `claude-cleanup` and the LaunchAgent orphan monitor both use the same whitelist-aware PGID kill semantics as the rest of the stack.
+- **Installer output now documents the wrapped `claude` command** so the runtime behavior is visible immediately after install/update.
+
+### Fixed
+- **`claude-health` now reports the wrapper-backed heap cap correctly** instead of warning as if `NODE_OPTIONS` must always be exported manually.
+- **`grep -c` zero-match handling no longer emits duplicated `0` lines** in health and diagnostic output.
+
 ## [0.6.0] - 2026-03-19
 
 ### Added
