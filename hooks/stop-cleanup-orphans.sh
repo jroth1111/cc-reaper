@@ -12,6 +12,7 @@
 #
 # WHITELIST: Long-running MCP servers shared across sessions are excluded.
 MCP_WHITELIST="${CC_MCP_WHITELIST:-supabase|@stripe/mcp|context7|claude-mem|chroma-mcp}"
+MCP_ORPHAN_PATTERN="npm exec @upstash|npm exec mcp-|npx.*mcp-server|node.*mcp-server|docker run .*mcp/|python.*mcp|uvx?.*mcp|worker-service\\.cjs|bun.*worker-service"
 
 SESSION_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
 
@@ -47,8 +48,11 @@ fi
 # Collect orphan PIDs to kill
 orphan_pids=""
 while IFS= read -r pid; do
- [ -n "$pid" ] && orphan_pids="$orphan_pids $pid"
-done < <(ps -eo pid,ppid,command | awk '$2 == 1' | grep -E "[c]laude.*stream-json|[n]pm exec @upstash|[n]pm exec mcp-|[n]px.*mcp-server|[w]orker-service\\.cjs|[b]un.*worker-service" | awk '{print $1}')
+ [ -z "$pid" ] && continue
+ pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+ echo "$pid_cmd" | grep -qE "$MCP_WHITELIST" && continue
+ orphan_pids="$orphan_pids $pid"
+done < <(ps -eo pid,ppid,command | awk '$2 == 1' | grep -E "[c]laude.*stream-json|${MCP_ORPHAN_PATTERN}" | awk '{print $1}')
 
 # Send SIGTERM
 for pid in $orphan_pids; do

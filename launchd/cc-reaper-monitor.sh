@@ -18,6 +18,9 @@ log() {
  echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"
 }
 
+MCP_WHITELIST="${CC_MCP_WHITELIST:-supabase|@stripe/mcp|context7|claude-mem|chroma-mcp}"
+MCP_ORPHAN_PATTERN="node.*mcp-server|npx.*mcp-server|docker run .*mcp/|python.*mcp|uvx?.*mcp|worker-service\\.cjs|node.*claude-mem"
+
 # ─── PGID-based cleanup (primary) ────────────────────────────────────────────
 # Find orphaned process groups whose leader has PPID=1 and is a Claude process.
 killed_pgids=()
@@ -43,7 +46,7 @@ done
 
 # ─── Pattern-based fallback (PPID=1 only) ─────────────────────────────────────
 # Catches processes that escaped their process group (e.g., called setsid())
-orphans=$(ps -eo pid,ppid,%cpu,%mem,etime,command | awk '$2 == 1' | grep -E "[c]laude.*stream-json|[n]ode.*mcp-server|[n]px.*mcp-server|[w]orker-service\\.cjs|[n]ode.*claude-mem")
+orphans=$(ps -eo pid,ppid,%cpu,%mem,etime,command | awk '$2 == 1' | grep -E "[c]laude.*stream-json|${MCP_ORPHAN_PATTERN}")
 
 kill_pids=()
 
@@ -54,6 +57,8 @@ if [ -n "$orphans" ]; then
  mem=$(echo "$line" | awk '{print $4}')
  etime=$(echo "$line" | awk '{print $5}')
  cmd=$(echo "$line" | awk '{for(i=6;i<=NF;i++) printf "%s ", $i; print ""}' | head -c 80)
+
+ echo "$cmd" | grep -qE "$MCP_WHITELIST" && continue
 
  # Skip if already killed via PGID
  already_killed=false
