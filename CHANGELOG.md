@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.1] - 2026-03-19
+
+### Changed
+- **Session detection now only tracks real Claude session leaders** — guard and snapshot logic require a `claude` process-group leader instead of any command containing the substring `claude`.
+- **Automatic cleanup now reaps only Claude-managed descendants** — stop-hook, manual cleanup, and LaunchAgent orphan cleanup no longer kill arbitrary background jobs solely because they once shared Claude ancestry.
+- **LaunchAgent guard defaults are now more conservative** — descendant overages are alert-only by default, while bloated/growth kills require minimum session age plus confirmation streaks before reaping.
+
+### Fixed
+- **LaunchAgent orphan cleanup no longer SIGKILLs skipped processes in the survivor sweep** after the whitelist/managed-process filters already chose to preserve them.
+- **TTY-based `caffeinate` cleanup was removed** because it could kill non-leak user work on the same terminal; managed-process cleanup and ledger proof now cover the Claude-owned case instead.
+
 ## [0.7.0] - 2026-03-19
 
 ### Added

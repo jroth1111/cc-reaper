@@ -27,15 +27,15 @@ Session starts
   └── sourced `claude` wrapper — injects `NODE_OPTIONS=--max-old-space-size=8192` unless you already set a cap
 
 Session ends normally
-  └── Stop hook — records the session's descendant ledger, then kills the session PGID with MCP whitelisting
+  └── Stop hook — records the session's descendant ledger, then reaps only Claude-managed descendants in the session PGID
 
 Session leaks while still running
   └── claude-guard — inspect-first manual command for bloated/idle/descendant-heavy sessions
-  └── LaunchAgent guard monitor — runs every 30 seconds and auto-reaps zombie explosions, descendant runaways, fast growth, and bloated sessions on macOS
+  └── LaunchAgent guard monitor — runs every 30 seconds and auto-reaps only persistent leak conditions on macOS
 
 Session crashes / terminal force-closed
   └── proc-janitor daemon — scans every 30s, kills regex-matched orphans after 60s grace
-  └── OR: LaunchAgent orphan monitor — zero-dependency macOS native, whitelist-aware PGID cleanup + ledger-based PPID=1 fallback
+  └── OR: LaunchAgent orphan monitor — zero-dependency macOS native, managed-process PGID cleanup + ledger-based PPID=1 fallback
 
 Disk and startup hygiene
   └── disk monitor — inspect-only visibility for temp growth, Claude tasks, and full session logs
@@ -48,7 +48,7 @@ Manual intervention needed
 
 ### Why PGID?
 
-Claude Code sessions are process group leaders (PGID = session PID). All spawned MCP servers, subagents, and their children inherit this PGID. `cc-reaper` uses that PGID as the cleanup boundary, but kills members individually when it must preserve shared long-lived MCP servers.
+Claude Code sessions are process group leaders (PGID = session PID). All spawned MCP servers, subagents, and their children inherit this PGID. `cc-reaper` uses that PGID as the cleanup boundary, but kills members individually so it can preserve shared long-lived MCP servers and avoid reaping unrelated user-launched background work.
 
 **Safety**: PGID cleanup only targets groups whose **leader** is a Claude CLI session (`claude.*stream-json`). The fallback path no longer kills global regex matches. It only kills PPID=`1` processes that were previously recorded as descendants of a real Claude session. Other apps like Chrome and Cursor may have `claude` subprocesses, so proof by session ancestry matters.
 
@@ -90,7 +90,7 @@ Commands available after restart:
 - `claude` — launch Claude Code with `NODE_OPTIONS=--max-old-space-size=8192` unless you already supplied a heap cap; use `command claude` to bypass the wrapper
 - `claude-ram` — show RAM/CPU usage breakdown with per-session details and orphan visibility (read-only)
 - `claude-sessions` — list all active sessions with idle/runaway detection, descendant counts, zombie counts, and session memory
-- `claude-cleanup` — kill orphan processes immediately (whitelist-aware PGID cleanup + ledger fallback)
+- `claude-cleanup` — kill orphan Claude-managed processes immediately (managed PGID cleanup + ledger fallback)
 - `claude-guard` — inspect-first session guard for bloated/idle/growth/descendant-heavy sessions
 - `claude-guard --dry-run` — preview what claude-guard would kill without actually killing
 - `claude-disk` — inspect Claude temp files, task files, and large session logs
@@ -143,10 +143,10 @@ Add to `~/.claude/settings.json` in the `"Stop"` hooks array:
 
 #### Option A: LaunchAgent suite (zero-dependency, macOS only)
 
-Native macOS approach — no Homebrew or Rust required. Installs three agents and is the strongest safety path because it uses the descendant ledger:
+Native macOS approach — no Homebrew or Rust required. Installs three agents and is the strongest safety path because it uses the descendant ledger and confirmation gates before destructive guard actions:
 
 - orphan monitor — every 10 minutes, PPID=1 + PGID cleanup
-- guard monitor — every 30 seconds, auto-reaps zombies, descendant explosions, fast-growth leaks, and bloated sessions
+- guard monitor — every 30 seconds, auto-reaps persistent zombies, fast-growth leaks, and sustained bloated sessions
 - disk monitor — every hour, records temp/task/log growth without deleting preserved artifacts
 
 ```bash
@@ -213,12 +213,12 @@ proc-janitor status   # check daemon health
 
 ## Automatic Session Guard
 
-`claude-guard` is the live-session guard. The manual command stays inspect-first, but the installed LaunchAgent guard monitor enables destructive actions for actual leak conditions. It operates in four phases:
+`claude-guard` is the live-session guard. The manual command stays inspect-first, and the installed LaunchAgent guard monitor only enables destructive actions after the condition persists across multiple samples. It operates in four phases:
 
-1. **Zombie explosion kill** — Sessions whose zombie count exceeds `CC_MAX_ZOMBIES` are killed immediately. This directly mitigates statusline/process-table failures like [#34092](https://github.com/anthropics/claude-code/issues/34092).
-2. **Descendant runaway kill** — Sessions whose descendant count exceeds `CC_MAX_DESCENDANTS` are treated as runaway subprocess leaks and can be auto-reaped.
-3. **Growth-rate kill** — Sessions whose memory is already above `CC_GUARD_MIN_GROWTH_MEM_MB` and still growing faster than `CC_MAX_GROWTH_MB_PER_MIN` are treated as active leaks even if they have not hit the absolute ceiling yet.
-4. **Bloated-session kill** — Sessions whose memory exceeds `CC_MAX_RSS_MB` are treated as bloated. On macOS, the guard prefers `footprint` over RSS when the real footprint is larger, which helps surface IOAccelerator/WebKit-style leaks like [#35804](https://github.com/anthropics/claude-code/issues/35804).
+1. **Zombie explosion kill** — Sessions whose zombie count exceeds `CC_MAX_ZOMBIES` across confirmation samples are killed. This directly mitigates statusline/process-table failures like [#34092](https://github.com/anthropics/claude-code/issues/34092).
+2. **Descendant runaway alert** — Sessions whose managed descendant count exceeds `CC_MAX_DESCENDANTS` are treated as runaway candidates, but the installed LaunchAgent defaults leave this as alert-only to avoid killing legitimate heavy tool execution.
+3. **Growth-rate kill** — Sessions whose managed memory is already above `CC_GUARD_MIN_GROWTH_MEM_MB` and still growing faster than `CC_MAX_GROWTH_MB_PER_MIN` across confirmation samples are treated as active leaks even if they have not hit the absolute ceiling yet.
+4. **Bloated-session kill** — Sessions whose managed memory exceeds `CC_MAX_RSS_MB` for long enough are treated as bloated. On macOS, the guard prefers `footprint` over RSS when the real footprint is larger, which helps surface IOAccelerator/WebKit-style leaks like [#35804](https://github.com/anthropics/claude-code/issues/35804).
 
 If session count exceeds `CC_MAX_SESSIONS`, the oldest idle sessions are only killed when `CC_GUARD_KILL_IDLE=1` is explicitly set.
 
@@ -238,6 +238,12 @@ claude-guard --dry-run  # preview without killing
 | `CC_MAX_ZOMBIES` | 16 | Zombie-process threshold before a session is treated as runaway |
 | `CC_MAX_GROWTH_MB_PER_MIN` | 512 | Growth-rate threshold (MB/min) for active leak detection |
 | `CC_GUARD_MIN_GROWTH_MEM_MB` | 1024 | Session-memory floor before growth-rate kills can trigger |
+| `CC_GUARD_MIN_KILL_AGE_SECONDS` | 180 | Minimum session age before non-zombie auto-kills are allowed |
+| `CC_GUARD_CONFIRM_ZOMBIES` | 2 | Consecutive zombie-breach samples required before reaping |
+| `CC_GUARD_CONFIRM_DESCENDANTS` | 4 | Consecutive descendant-breach samples required before reaping |
+| `CC_GUARD_CONFIRM_GROWTH` | 2 | Consecutive growth-breach samples required before reaping |
+| `CC_GUARD_CONFIRM_BLOATED_IDLE` | 2 | Consecutive idle bloated-session samples required before reaping |
+| `CC_GUARD_CONFIRM_BLOATED_ACTIVE` | 6 | Consecutive active bloated-session samples required before reaping |
 | `CC_USE_FOOTPRINT` | 1 | On macOS, use `footprint` when it reports more memory than RSS |
 | `CC_GUARD_KILL_ZOMBIES` | 1 | Auto-kill sessions that exceed `CC_MAX_ZOMBIES` |
 | `CC_GUARD_KILL_DESCENDANTS` | 0 | Auto-kill sessions that exceed `CC_MAX_DESCENDANTS` |
@@ -247,7 +253,7 @@ claude-guard --dry-run  # preview without killing
 | `CC_REAPER_AUTO_NODE_OPTIONS` | 1 | Add a scoped `--max-old-space-size` cap to `claude` launches |
 | `CC_NODE_MAX_OLD_SPACE_MB` | 8192 | Heap cap injected by the sourced `claude` wrapper |
 
-Installed LaunchAgent defaults are intentionally stricter than the manual command: 30-second cadence, `CC_MAX_RSS_MB=3072`, `CC_MAX_DESCENDANTS=96`, and auto-kill enabled for zombie, descendant, growth, and bloated-session conditions.
+Installed LaunchAgent defaults are intentionally stricter and safer than the manual command: 30-second cadence, `CC_MAX_RSS_MB=3072`, `CC_MAX_DESCENDANTS=96`, `CC_GUARD_MIN_KILL_AGE_SECONDS=300`, confirmation streaks for every destructive condition, auto-kill enabled for zombie, growth, and bloated-session conditions, and descendant overages left alert-only by default.
 
 Example: lower the threshold to 2 GB but keep inspect-only behavior:
 

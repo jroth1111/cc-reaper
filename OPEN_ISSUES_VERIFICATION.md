@@ -22,10 +22,10 @@ Open Claude Code leak reports still fall into the same broad classes:
 
 | Cluster | Representative issues | Shipped mitigation | Result |
 |---|---|---|---|
-| Fast ArrayBuffer / external-memory growth | `#33589`, `#33915`, `#33436`, `#32729`, `#34967` | Scoped heap cap on `claude` launch + 30-second LaunchAgent guard + growth-rate kill + 3 GB absolute ceiling | `PARTIAL` |
-| Native-memory growth / node-pty / generic CLI leaks | `#32760`, `#33673`, `#34652`, `#25023`, `#33735`, `#17615` | 30-second guard + descendant ceiling + absolute memory ceiling | `PARTIAL` |
+| Fast ArrayBuffer / external-memory growth | `#33589`, `#33915`, `#33436`, `#32729`, `#34967` | Scoped heap cap on `claude` launch + 30-second LaunchAgent guard + confirmation-gated growth kill + 3 GB sustained ceiling | `PARTIAL` |
+| Native-memory growth / node-pty / generic CLI leaks | `#32760`, `#33673`, `#34652`, `#25023`, `#33735`, `#17615` | 30-second guard + confirmation-gated sustained ceiling | `PARTIAL` |
 | Hidden macOS footprint / GPU leaks | `#35804` | `footprint`-aware memory accounting + 3 GB guard ceiling | `PARTIAL` |
-| Orphan subprocesses / zombie explosions / PID pressure | `#20369`, `#33947`, `#35418`, `#34092`, `#35673` | Stop hook + descendant ledger + whitelist-aware orphan monitor + zombie/descendant reaping | `FULL` on macOS/Linux |
+| Orphan subprocesses / zombie explosions / PID pressure | `#20369`, `#33947`, `#35418`, `#34092`, `#35673` | Stop hook + descendant ledger + managed-process orphan monitor + zombie reaping | `FULL` on macOS/Linux |
 | Missing default V8 cap / heap OOM | `#27788`, `#18011`, `#30131`, `#19025`, `#1421` | Scoped `claude` wrapper injects `--max-old-space-size=8192`; `claude-health` exposes bypass cases | `PARTIAL` |
 | Disk growth | `#26911`, `#34783`, `#24207`, `#28126` | Inspect-only disk monitor + explicit temp purge | `PARTIAL` / `DETECT` |
 | Windows-specific leaks | `#24827`, `#33626`, `#33588`, `#33437`, `#29413`, `#32183` | None | `NONE` |
@@ -54,5 +54,6 @@ Observed outcomes:
 ## Residual Gaps
 
 - The live-session memory-leak mitigations are still reactive. They reduce blast radius; they do not fix upstream leaks.
+- The automatic mitigations are now narrower on purpose: they only reap Claude-managed descendants and require persistence before most destructive actions.
 - The strongest automatic path is the sourced shell wrapper plus the macOS LaunchAgent suite. Proc-janitor users still get orphan cleanup but not live-session growth reaping.
 - Windows remains out of scope.
