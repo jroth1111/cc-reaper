@@ -11,9 +11,9 @@
  <string>__HOME__/.cc-reaper/cc-reaper-guard-monitor.sh</string>
  </array>
 
- <!-- Run every 120 seconds -->
+ <!-- Run every 30 seconds -->
  <key>StartInterval</key>
- <integer>120</integer>
+ <integer>30</integer>
 
  <key>RunAtLoad</key>
  <true/>
@@ -31,15 +31,25 @@
  <key>CC_IDLE_THRESHOLD</key>
  <string>1</string>
  <key>CC_MAX_RSS_MB</key>
- <string>4096</string>
+ <string>3072</string>
  <key>CC_MAX_DESCENDANTS</key>
- <string>128</string>
+ <string>96</string>
  <key>CC_MAX_ZOMBIES</key>
  <string>16</string>
+ <key>CC_MAX_GROWTH_MB_PER_MIN</key>
+ <string>512</string>
+ <key>CC_GUARD_MIN_GROWTH_MEM_MB</key>
+ <string>1024</string>
  <key>CC_USE_FOOTPRINT</key>
  <string>1</string>
  <key>CC_GUARD_NOTIFY</key>
  <string>0</string>
+ <key>CC_GUARD_KILL_BLOATED</key>
+ <string>1</string>
+ <key>CC_GUARD_KILL_DESCENDANTS</key>
+ <string>1</string>
+ <key>CC_GUARD_KILL_GROWTH</key>
+ <string>1</string>
  </dict>
 </dict>
 </plist>

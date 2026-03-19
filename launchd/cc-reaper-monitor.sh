@@ -6,11 +6,11 @@
 # Zero dependencies — no Homebrew, no Rust, just bash + launchd.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LEDGER_HELPERS="$SCRIPT_DIR/claude-process-ledger.bash"
-[ -f "$LEDGER_HELPERS" ] || LEDGER_HELPERS="$SCRIPT_DIR/../shell/claude-process-ledger.bash"
-[ -f "$LEDGER_HELPERS" ] || LEDGER_HELPERS="$HOME/.cc-reaper/claude-process-ledger.bash"
+RUNTIME_HELPERS="$SCRIPT_DIR/claude-cleanup-runtime.bash"
+[ -f "$RUNTIME_HELPERS" ] || RUNTIME_HELPERS="$SCRIPT_DIR/../shell/claude-cleanup-runtime.bash"
+[ -f "$RUNTIME_HELPERS" ] || RUNTIME_HELPERS="$HOME/.cc-reaper/claude-cleanup-runtime.bash"
 # shellcheck disable=SC1090
-source "$LEDGER_HELPERS"
+source "$RUNTIME_HELPERS"
 
 LOG_DIR="$HOME/.cc-reaper/logs"
 LOG_FILE="$LOG_DIR/monitor.log"
@@ -45,9 +45,7 @@ for pgid in $orphan_pgids; do
 
  group_info=$(ps -eo pid,pgid,%cpu,%mem,command 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {printf "PID=%s CPU=%s%% MEM=%s%% ", $1, $3, $4}')
  log "KILL SIGTERM group PGID=$pgid ($group_info)"
-
- # Send SIGTERM first
- kill -- -"$pgid" 2>/dev/null
+ _claude_pgid_kill "$pgid"
  killed_pgids+=("$pgid")
 done
 
@@ -83,12 +81,11 @@ if [ "$total_pgids" -eq 0 ] && [ "$total_pids" -eq 0 ]; then
  exit 0
 fi
 
-# Wait for graceful shutdown, then SIGKILL survivors
-sleep 3
-
 for pgid in "${killed_pgids[@]}"; do
  survivors=$(ps -eo pid,pgid 2>/dev/null | awk -v pgid="$pgid" '$2 == pgid {print $1}')
  for pid in $survivors; do
+ pid_cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+ _claude_is_whitelisted_mcp_cmd "$pid_cmd" && continue
  kill -9 "$pid" 2>/dev/null
  log "SIGKILL PID=$pid from group PGID=$pgid"
  done
